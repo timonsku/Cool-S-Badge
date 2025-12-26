@@ -1,0 +1,109 @@
+
+
+#include <zephyr/dt-bindings/led/led.h>
+
+#include "../nrf52-bindings.h"
+
+/ {
+	aliases {
+		led-strip = &led_strip;
+		// sw0 = &button0;
+	};
+
+    led_pwr: regulator-led-pwr {
+        compatible = "regulator-fixed";
+        regulator-name = "LED Power Enable";
+        enable-gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
+    };
+
+	haptic_en: regulator-haptic-en {
+        compatible = "regulator-fixed";
+        regulator-name = "Haptic Enable";
+        enable-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+    };
+
+
+	// led_strip: ws2812 {
+	// 	compatible = "worldsemi,ws2812-gpio";
+
+	// 	chain-length = <30>; /* arbitrary; change at will */
+	// 	color-mapping = <LED_COLOR_ID_GREEN
+	// 			 LED_COLOR_ID_RED
+	// 			 LED_COLOR_ID_BLUE>;
+	// 	/* P0: */
+	// 	gpios = <&gpio0 17 0>;
+	// };
+
+};
+
+&qspi {
+	status = "disabled";
+};
+
+ &spi1 { /* MOSI on D11 / P0.23 */
+	 compatible = "nordic,nrf-spim";
+	 status = "okay";
+	 pinctrl-0 = <&spi1_default>;
+	 pinctrl-1 = <&spi1_sleep>;
+	 pinctrl-names = "default", "sleep";
+	 led_strip: ws2812@0 {
+		 compatible = "worldsemi,ws2812-spi";
+ 
+		 /* SPI */
+		 reg = <0>; /* ignored, but necessary for SPI bindings */
+		 spi-max-frequency = <SPI_FREQ>;
+ 
+		 /* WS2812 */
+		 chain-length = <30>; /* arbitrary; change at will */
+		 color-mapping = <LED_COLOR_ID_GREEN
+				  LED_COLOR_ID_RED
+				  LED_COLOR_ID_BLUE>;
+		 spi-one-frame = <ONE_FRAME>;
+		 spi-zero-frame = <ZERO_FRAME>;
+	 };
+ };
+ 
+	&spi1_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 0, 20)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 17)>;
+				// <NRF_PSEL(SPIM_MISO, 0, 22)>;
+		};
+	};
+
+	&spi1_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 0, 20)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 17)>;
+				// <NRF_PSEL(SPIM_MISO, 0, 22)>;
+			low-power-enable;
+		};
+	};
+
+&uart0 {
+	compatible = "nordic,nrf-uart";
+	current-speed = <115200>;
+	status = "okay";
+	pinctrl-0 = <&uart0_promicro_default>;
+	pinctrl-1 = <&uart0_promicro_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+&pinctrl {
+	uart0_promicro_default: uart0_promicro_default {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 0, 9)>,
+				<NRF_PSEL(UART_RX, 0, 10)>;
+		};
+	};
+
+	uart0_promicro_sleep: uart0_promicro_sleep {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 0, 9)>,
+				<NRF_PSEL(UART_RX, 0, 10)>;
+			low-power-enable;
+		};
+	};
+
+
+}; 

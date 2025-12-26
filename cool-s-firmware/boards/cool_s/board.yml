@@ -1,0 +1,7 @@
+board:
+  name: cool_s
+  full_name: Cool S Badge
+  vendor: Diodes Delight
+  socs:
+  - name: nrf52840
+
