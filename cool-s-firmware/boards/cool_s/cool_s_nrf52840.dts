@@ -46,6 +46,7 @@
 		bootloader-led0 = &led0;
 		mcuboot-led0 = &led0;
 		mcuboot-button0 = &button0;
+		wakeup = &button3;
 		spi = &spi1;
 		watchdog0 = &wdt0;
 	};

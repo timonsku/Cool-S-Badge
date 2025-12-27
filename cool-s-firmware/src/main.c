@@ -20,6 +20,7 @@
 #include <zephyr/retention/bootmode.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/input/input.h>
+#include <zephyr/sys/poweroff.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/hci.h>
@@ -86,6 +87,8 @@ static struct fs_mount_t littlefs_mnt = {
 // #include "spng.h"
 static struct k_sem sync;
 
+static uint8_t device_name[] = {'L', 'E', 'D', '_', 'B', 'L','E','_','C', 'O', 'O', 'L'};
+
 const struct device *led_en = DEVICE_DT_GET(DT_NODELABEL(led_pwr));
 #define STRIP_NODE		DT_ALIAS(led_strip)
 #if DT_NODE_HAS_PROP(DT_ALIAS(led_strip), chain_length)
@@ -102,11 +105,23 @@ static const struct device *const strip = DEVICE_DT_GET(STRIP_NODE);
 #define SCRATCH_BUFFER_SIZE GIF_SCRATCH_BUFFER_REQUIRED_SIZE
 uint8_t scratch_buffer[SCRATCH_BUFFER_SIZE]; 
 
+struct pixel_animation_frame {
+	uint16_t duration_ms;
+	struct led_rgb pixels[STRIP_NUM_PIXELS];
+};
+
+struct pixel_animation {
+	uint16_t num_frames;
+	struct pixel_animation_frame *frames;
+};
+
+struct pixel_animation current_animation;
+bool playAnimation = false;
 
 LOG_MODULE_REGISTER(app);
 
-#define DEVICE_NAME             CONFIG_BT_DEVICE_NAME
-#define DEVICE_NAME_LEN         (sizeof(DEVICE_NAME) - 1)
+// #define DEVICE_NAME             CONFIG_BT_DEVICE_NAME
+// #define DEVICE_NAME_LEN         (sizeof(DEVICE_NAME) - 1)
 
 
 #define RUN_STATUS_LED          DK_LED1
@@ -140,7 +155,7 @@ static struct k_work adv_work;
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+	BT_DATA(BT_DATA_NAME_COMPLETE, device_name, sizeof(device_name)),
 	
 };
 
@@ -154,10 +169,12 @@ struct __attribute__((packed)) image_header {
 	uint8_t option;
 };
 
-uint64_t recovery_timeout = 0;
-float global_brightness = 1.0f;
+int recovery_timeout = 0;
+int shutdown_timeout = 0;
+float global_brightness = 0.3f;
+static const struct gpio_dt_spec wakeup_button = GPIO_DT_SPEC_GET(DT_ALIAS(wakeup), gpios);
 
-#define GAMMA_VAL 2.2
+#define GAMMA_VAL 2.0
 // #define DEVICE_TYPE 0x85 // 64x20
 #define DEVICE_TYPE 0x82 // 32x16
 
@@ -174,6 +191,9 @@ void display_debug();
 void display_warn();
 void render();
 void check_for_recovery_mode();
+void check_power_off();
+void playback_animation(struct pixel_animation *animation);
+int save_pixels_to_file(const char *filename);
 
 static ssize_t write_led(struct bt_conn *conn,
 			 const struct bt_gatt_attr *attr,
@@ -298,6 +318,7 @@ void imageCommand(const void *buf, uint16_t len)
 					// respond with ack by sending packet back
 					data[3] = 0x01;
 					bt_gatt_notify(NULL, &led_svc.attrs[4], data, len);
+					save_pixels_to_file("/lfs1/default.dat");
 				}
 			} else {
 				LOG_WRN("Unknown Draw Command Packet received");
@@ -338,6 +359,7 @@ void imageCommand(const void *buf, uint16_t len)
 			bt_gatt_notify(NULL, &led_svc.attrs[4], &bytes, sizeof(bytes));
 			unsigned char bytes2[] = {0x5, 0x0, 0x3, 0x0, 0x3};
 			bt_gatt_notify(NULL, &led_svc.attrs[4], &bytes2, sizeof(bytes2));
+			playAnimation = true;
 		}
 		
 		// PNG
@@ -401,7 +423,7 @@ void render(){
 	draw:
 	if(!regulator_is_enabled(led_en)) {
 		regulator_enable(led_en);
-		k_sleep(K_USEC(200));
+		k_sleep(K_USEC(500));
 	}
 	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
 		pixels[i] = set_brightness(pixels_raw[i], global_brightness);
@@ -452,6 +474,13 @@ void process_gif(const uint8_t* gif_data, size_t gif_size) {
         // delay_ms contains frame duration
         LOG_INF("Frame decoded, delay: %d ms", delay_ms);
 		LOG_HEXDUMP_INF(frame_buffer, 30 * 3, "Decoded GIF frame data:");
+		// save frame to current_animation
+		struct pixel_animation_frame frame;
+		frame.duration_ms = delay_ms;
+		memcpy(frame.pixels, frame_buffer, sizeof(frame.pixels));
+		current_animation.frames = realloc(current_animation.frames, sizeof(struct pixel_animation_frame) * (current_animation.num_frames + 1));
+		memcpy(&current_animation.frames[current_animation.num_frames], &frame, sizeof(struct pixel_animation_frame));
+		current_animation.num_frames++;
     }
     
     if(frame_result < 0) {
@@ -460,6 +489,14 @@ void process_gif(const uint8_t* gif_data, size_t gif_size) {
     
     gif_close(&ctx);
     free(frame_buffer);
+}
+
+void playback_animation(struct pixel_animation *animation) {
+	for(int i = 0; i < animation->num_frames; i++) {
+		memcpy(pixels_raw, animation->frames[i].pixels, sizeof(pixels_raw));
+		render();
+		k_sleep(K_MSEC(animation->frames[i].duration_ms));
+	}
 }
 
 static ssize_t read_led(struct bt_conn *conn,
@@ -568,10 +605,6 @@ static void input_event_callback(struct input_event *evt, void *user_data)
 INPUT_CALLBACK_DEFINE(NULL, input_event_callback, NULL);
 
 
-
-#define DELAY_TIME K_MSEC(50)
-
-
 void display_debug()
 {
 	// all white
@@ -617,6 +650,83 @@ void check_for_recovery_mode()
 	}
 }
 
+
+int save_pixels_to_file(const char *filename)
+{
+	struct fs_file_t file;
+	int rc;
+
+	fs_file_t_init(&file);
+
+	rc = fs_open(&file, filename, FS_O_CREATE | FS_O_WRITE);
+	if (rc < 0) {
+		LOG_ERR("Error opening file %s: %d", filename, rc);
+		return rc;
+	}
+	rc = fs_write(&file, pixels_raw, sizeof(pixels_raw));
+	if (rc < 0) {
+		LOG_ERR("Error writing to file %s: %d", filename, rc);
+		fs_close(&file);
+		return rc;
+	}
+	fs_close(&file);
+	LOG_INF("Saved pixel data to file %s", filename);
+	return 0;
+}
+
+int load_pixels_from_file(const char *filename)
+{
+	struct fs_file_t file;
+	int rc;
+
+	fs_file_t_init(&file);
+
+	rc = fs_open(&file, filename, FS_O_READ);
+	if (rc < 0) {
+		LOG_ERR("Error opening file %s: %d", filename, rc);
+		return rc;
+	}
+	rc = fs_read(&file, pixels_raw, sizeof(pixels_raw));
+	if (rc < 0) {
+		LOG_ERR("Error reading from file %s: %d", filename, rc);
+		fs_close(&file);
+		return rc;
+	}
+	fs_close(&file);
+	LOG_INF("Loaded pixel data from file %s", filename);
+	render();
+	return 0;
+}
+
+void check_power_off(){
+	if(shutdown_timeout != 0 && k_uptime_get() > shutdown_timeout) {
+		LOG_INF("Shutting down now...");
+		shutdown_timeout = 0;
+		int rc = gpio_pin_configure_dt(&wakeup_button, GPIO_INPUT);
+		if (rc < 0) {
+			printf("Could not configure wakeup button GPIO (%d)\n", rc);
+		}
+
+		rc = gpio_pin_interrupt_configure_dt(&wakeup_button, GPIO_INT_LEVEL_ACTIVE);
+		if (rc < 0) {
+			printf("Could not configure wakeup button GPIO interrupt (%d)\n", rc);
+		}
+		regulator_disable(led_en);
+		sys_poweroff();
+	}
+	if(button2 && button3){
+		if(shutdown_timeout == 0){
+			shutdown_timeout = k_uptime_get() + 1000;
+		}
+		LOG_INF("Shutdown in %d seconds...", (int)((shutdown_timeout - k_uptime_get()) / 1000));
+	}else{
+		if(shutdown_timeout != 0){
+			LOG_INF("Button combo released, cancelling shutdown");
+		}
+		shutdown_timeout = 0;
+	}
+}
+
 int main(void)
 {
 	int blink_status = 0;
@@ -625,7 +735,7 @@ int main(void)
 	int rc;
 	// NRF_POWER->GPREGRET = 0x57;
 	// sys_reboot(0x57);
-	// regulator_enable(led_en);
+	regulator_enable(led_en);
 	LOG_INF("build time: " __DATE__ " " __TIME__);
 
 	k_sem_init(&sync, 0, 1);
@@ -663,13 +773,28 @@ int main(void)
 	if (IS_ENABLED(CONFIG_SETTINGS)) {
 		settings_load();
 	}
+	
+	
+	char addr_s[BT_ADDR_LE_STR_LEN];
+	bt_addr_le_t addr = {0};
+	size_t count = 1;
+	bt_id_get(&addr, &count);
+	bt_addr_le_to_str(&addr, addr_s, sizeof(addr_s));
+
+	LOG_INF("Bluetooth Address: %s", addr_s);
+	memcpy(&device_name[sizeof(device_name) - 4], &addr_s[12], 2);
+	memcpy(&device_name[sizeof(device_name) - 2], &addr_s[15], 2);
+	LOG_INF("Device name: %s.", device_name);
+	bt_le_adv_update_data(ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
 
 	STATS_SET(smp_svr_stats, version_major, FW_VERSION_MAJOR);
 	STATS_SET(smp_svr_stats, version_minor, FW_VERSION_MINOR);
 
+
 	k_work_init(&adv_work, adv_work_handler);
 	advertising_start();
 	clear_display();
+	load_pixels_from_file("/lfs1/default.dat");
 	
 	if (boot_is_img_confirmed() == 0) {
         LOG_WRN("Boot image not confirmed. Confirming now.");
@@ -677,13 +802,16 @@ int main(void)
     }
 	
 	for (;;) {
-		dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
+		// dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
 		
-		STATS_INC(smp_svr_stats, ticks);
-		k_sleep(K_MSEC(RUN_LED_BLINK_INTERVAL));
-
-		k_sem_take(&sync, K_MSEC(10));
+		// STATS_INC(smp_svr_stats, ticks);
+		// k_sleep(K_MSEC(RUN_LED_BLINK_INTERVAL));
+		if(playAnimation) {
+			playback_animation(&current_animation);
+		}
+		k_sem_take(&sync, K_MSEC(1));
 		check_for_recovery_mode();
+		check_power_off();
 		
 	}
 }
