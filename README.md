@@ -23,3 +23,8 @@ The iOS app seems to have trouble finding devices. Might be due to too many BLE 
 Android: https://play.google.com/store/apps/details?id=com.wifiled.ipixels&hl=en
 
 iOS: https://apps.apple.com/us/app/ipixel-color/id1562961996
+
+
+Turn On/Off
+----------------
+Press the bottom two buttons for 2 seconds and release to turn off. Press them again to turn back on.
