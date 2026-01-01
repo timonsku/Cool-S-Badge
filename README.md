@@ -5,8 +5,11 @@ Targets nRF Connect 3.1.1
 For Assembly check the docs folder.
 TRIPPLE CHECK THE PRO MICRO ORIENTATION before soldering in place
 
-Update the firmware with the latest version comitted to the root of the repo
-Download Nordic Device Manager and select the zip file in the DFU tab.
+Always update the firmware with the latest version committed to the root of the repo.
+
+OTA Firmware Update
+----------------
+Download Nordic Device Manager and select the zip file in the DFU/Image tab.
 Takes about 30sec after upload before it comes back online.
 https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-Device-Manager
 
@@ -20,8 +23,6 @@ Brightness adjustment in Settings menu works but does not persists right now.
 Colors persist through reboots if you pressed OK in the editor.
 
 Click the big plus sign to find devices. They are called "LED_XXXXXXXX". With XXXXXXXX being the last four bytes of the MAC address.
-
-The iOS app seems to have trouble finding devices. Might be due to too many BLE devices, try a less chatty place if thats the case.
 
 Android: https://play.google.com/store/apps/details?id=com.wifiled.ipixels&hl=en
 
