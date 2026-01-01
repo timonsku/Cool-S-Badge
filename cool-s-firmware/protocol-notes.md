@@ -4,6 +4,10 @@ I: 00 83 f7 46 f5 02 65 47 |...F..eG
 I: 0a 25 03 00 00 fb 24 00 |.%....$.
 I: 00 ab ef 5e 96 02 65 47 |...^..eG
 
+scan reponse:
+00 72 00 01 05 01
+007200010501
+
 	// Fill header
 	header[0] = byte(length & 255)
 	header[1] = byte((length >> 8) & 255)

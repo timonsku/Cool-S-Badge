@@ -54,7 +54,7 @@
 #define STORAGE_PARTITION_ID	FIXED_PARTITION_ID(STORAGE_PARTITION_LABEL)
 
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 3
+#define FW_VERSION_MINOR 4
 
 /* Define an example stats group; approximates seconds since boot. */
 STATS_SECT_START(smp_svr_stats)
@@ -87,7 +87,7 @@ static struct fs_mount_t littlefs_mnt = {
 // #include "spng.h"
 static struct k_sem sync;
 
-static uint8_t device_name[] = {'L', 'E', 'D', '_', 'B', 'L','E','_','C', 'O', 'O', 'L'};
+static uint8_t device_name[] = {'L', 'E', 'D', '_', 'B', 'L','E','_','C', 'O', 'O', 'L','0','0','0','0'};
 
 const struct device *led_en = DEVICE_DT_GET(DT_NODELABEL(led_pwr));
 #define STRIP_NODE		DT_ALIAS(led_strip)
@@ -159,8 +159,10 @@ static const struct bt_data ad[] = {
 	
 };
 
+static const uint8_t led_scan_resp[] = {0x00, 0x72, 0x00, 0x01, 0x05, 0x01};
+
 static const struct bt_data sd[] = {
-	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_IPIXEL_SRV_VAL),
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, led_scan_resp,sizeof(led_scan_resp)),
 };
 
 struct __attribute__((packed)) image_header {
@@ -782,6 +784,8 @@ int main(void)
 	bt_addr_le_to_str(&addr, addr_s, sizeof(addr_s));
 
 	LOG_INF("Bluetooth Address: %s", addr_s);
+	memcpy(&device_name[sizeof(device_name) - 8], &addr_s[6], 2);
+	memcpy(&device_name[sizeof(device_name) - 6], &addr_s[9], 2);
 	memcpy(&device_name[sizeof(device_name) - 4], &addr_s[12], 2);
 	memcpy(&device_name[sizeof(device_name) - 2], &addr_s[15], 2);
 	LOG_INF("Device name: %s.", device_name);
