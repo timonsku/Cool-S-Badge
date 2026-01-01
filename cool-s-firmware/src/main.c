@@ -54,7 +54,7 @@
 #define STORAGE_PARTITION_ID	FIXED_PARTITION_ID(STORAGE_PARTITION_LABEL)
 
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 4
+#define FW_VERSION_MINOR 5
 
 /* Define an example stats group; approximates seconds since boot. */
 STATS_SECT_START(smp_svr_stats)
@@ -138,20 +138,36 @@ static bool button2 = false;
 static bool button3 = false;
 static bool                   notify_enabled;
 static struct k_work adv_work;
+	
+#define BT_UUID_IPIXEL_SRV_VAL BT_UUID_16_ENCODE(0x00fa)
+	// BT_UUID_128_ENCODE(0x000000fa, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
 
-#define BT_UUID_IPIXEL_SRV_VAL \
-	BT_UUID_128_ENCODE(0x000000fa, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
-	// BT_UUID_128_ENCODE(0x0000fee0, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
+#define BT_UUID_IPIXEL_WRITE_VAL BT_UUID_16_ENCODE(0xfa02)
+	// BT_UUID_128_ENCODE(0x0000fa02, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
 
-#define BT_UUID_IPIXEL_WRITE_VAL \
-	BT_UUID_128_ENCODE(0x0000fa02, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
+#define BT_UUID_IPIXEL_NOTIFY_VAL BT_UUID_16_ENCODE(0xfa03)
+	// BT_UUID_128_ENCODE(0x0000fa03, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
 
-#define BT_UUID_IPIXEL_NOTIFY_VAL \
-	BT_UUID_128_ENCODE(0x0000fa03, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
+// #define BT_UUID_IPIXEL_SRV_AE_VAL BT_UUID_128_ENCODE(0x0000ae00, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
 
-#define BT_UUID_IPIXEL_SRV    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_SRV_VAL)
-#define BT_UUID_IPIXEL_WRITE    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_WRITE_VAL)
-#define BT_UUID_IPIXEL_NOTIFY    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_NOTIFY_VAL)
+// #define BT_UUID_IPIXEL_WRITE_AE_VAL BT_UUID_128_ENCODE(0x0000ae01, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
+
+// #define BT_UUID_IPIXEL_NOTIFY_AE_VAL BT_UUID_128_ENCODE(0x0000ae02, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
+
+
+// #define BT_UUID_IPIXEL_SRV    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_SRV_VAL)
+// #define BT_UUID_IPIXEL_WRITE    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_WRITE_VAL)
+// #define BT_UUID_IPIXEL_NOTIFY    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_NOTIFY_VAL)
+
+#define BT_UUID_IPIXEL_SRV    BT_UUID_DECLARE_16(0x00fa)
+#define BT_UUID_IPIXEL_WRITE    BT_UUID_DECLARE_16(0xfa02)
+#define BT_UUID_IPIXEL_NOTIFY    BT_UUID_DECLARE_16(0xfa03)
+
+// #define BT_UUID_IPIXEL_SRV_AE    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_SRV_AE_VAL)
+// #define BT_UUID_IPIXEL_WRITE_AE    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_WRITE_AE_VAL)
+// #define BT_UUID_IPIXEL_NOTIFY_AE    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_NOTIFY_AE_VAL)
+
+
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -201,6 +217,12 @@ static ssize_t write_led(struct bt_conn *conn,
 			 const struct bt_gatt_attr *attr,
 			 const void *buf,
 			 uint16_t len, uint16_t offset, uint8_t flags);
+
+static ssize_t read_led(struct bt_conn *conn,
+			 const struct bt_gatt_attr *attr,
+			 void *buf,
+			 uint16_t len, uint16_t offset);
+
 static void lbslc_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 				  uint16_t value);
 
@@ -210,23 +232,48 @@ BT_GATT_PRIMARY_SERVICE(BT_UUID_IPIXEL_SRV),
 			       BT_GATT_CHRC_WRITE_WITHOUT_RESP | BT_GATT_CHRC_WRITE,
 			       BT_GATT_PERM_WRITE |
 			       BT_GATT_PERM_PREPARE_WRITE,
-			       NULL, write_led, NULL),
+			       read_led, write_led, NULL),
+	BT_GATT_CUD("TR2310R003-21", BT_GATT_PERM_READ),
 	BT_GATT_CHARACTERISTIC(BT_UUID_IPIXEL_NOTIFY,
 			       BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ,
-			       NULL, NULL, NULL),
+			       read_led, write_led, NULL),
 	BT_GATT_CCC(lbslc_ccc_cfg_changed,
 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
 
+// BT_GATT_SERVICE_DEFINE(led_svc_ae,
+// BT_GATT_PRIMARY_SERVICE(BT_UUID_IPIXEL_SRV_AE),
+// 	BT_GATT_CHARACTERISTIC(BT_UUID_IPIXEL_WRITE_AE,
+// 			       BT_GATT_CHRC_WRITE_WITHOUT_RESP,
+// 			       BT_GATT_PERM_WRITE |
+// 			       BT_GATT_PERM_PREPARE_WRITE,
+// 			       read_led, write_led, NULL),
+// 	BT_GATT_CHARACTERISTIC(BT_UUID_IPIXEL_NOTIFY_AE,
+// 			       BT_GATT_CHRC_NOTIFY,
+// 			       BT_GATT_PERM_READ,
+// 			       read_led, write_led, NULL),
+// 	BT_GATT_CCC(lbslc_ccc_cfg_changed,
+// 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+// );
 
 
 static void lbslc_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 				  uint16_t value)
 {
+	LOG_INF("cfg_change: %u", value);
 	notify_enabled = (value == BT_GATT_CCC_NOTIFY);
 	if(notify_enabled) {
 		LOG_INF("Notifications enabled");
+			uint8_t info_notify2[] = {0x00, 0x05, 0x80, 0x0f, 0x15, 0x01, 0x05};
+			bt_gatt_notify(NULL, &led_svc.attrs[5], &info_notify2, sizeof(info_notify2));
+			// bt_gatt_notify(NULL, &led_svc_ae.attrs[4], &info_notify2, sizeof(info_notify2));
+
+			uint8_t info_notify[11] = {0x0b, 0x00, 0x01, 0x80, DEVICE_TYPE, 0x02, 0x2c, 0x00, 0x00, 0x01, 0x00};
+			bt_gatt_notify(NULL, &led_svc.attrs[5], &info_notify, sizeof(info_notify));
+			// bt_gatt_notify(NULL, &led_svc_ae.attrs[4], &info_notify, sizeof(info_notify));
+
+		
 	}
 }
 
@@ -273,14 +320,14 @@ void parseCommandPacket(const void *buf, uint16_t len)
 		case 0x08:
 			LOG_INF("Device Info Request received");
 			uint8_t info_notify[11] = {0x0b, 0x00, 0x01, 0x80, DEVICE_TYPE, 0x02, 0x2c, 0x00, 0x00, 0x01, 0x00};
-			bt_gatt_notify(NULL, &led_svc.attrs[4], &info_notify, sizeof(info_notify));
+			bt_gatt_notify(NULL, &led_svc.attrs[5], &info_notify, sizeof(info_notify));
 			break;
 		case 0x07:
 			LOG_INF("Image ack request received");
 			unsigned char bytes[] = {0x5, 0x0, 0x8, 0x80, 0x1};
-			bt_gatt_notify(NULL, &led_svc.attrs[4], &bytes, sizeof(bytes));
+			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes, sizeof(bytes));
 			unsigned char bytes2[] = {0x5, 0x0, 0x11, 0x0, 0x3};
-			bt_gatt_notify(NULL, &led_svc.attrs[4], &bytes2, sizeof(bytes2));
+			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes2, sizeof(bytes2));
 			break;
 		case 0x05:
 			if(data[2] == 0x04) {
@@ -319,7 +366,7 @@ void imageCommand(const void *buf, uint16_t len)
 					LOG_INF("Live draw stop packet received");
 					// respond with ack by sending packet back
 					data[3] = 0x01;
-					bt_gatt_notify(NULL, &led_svc.attrs[4], data, len);
+					bt_gatt_notify(NULL, &led_svc.attrs[5], data, len);
 					save_pixels_to_file("/lfs1/default.dat");
 				}
 			} else {
@@ -358,9 +405,9 @@ void imageCommand(const void *buf, uint16_t len)
 			process_gif(&data[15], len - 15);
 			// acknowledge receipt
 			unsigned char bytes[] = {0x5, 0x0, 0x8, 0x80, 0x1};
-			bt_gatt_notify(NULL, &led_svc.attrs[4], &bytes, sizeof(bytes));
+			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes, sizeof(bytes));
 			unsigned char bytes2[] = {0x5, 0x0, 0x3, 0x0, 0x3};
-			bt_gatt_notify(NULL, &led_svc.attrs[4], &bytes2, sizeof(bytes2));
+			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes2, sizeof(bytes2));
 			playAnimation = true;
 		}
 		
@@ -370,9 +417,9 @@ void imageCommand(const void *buf, uint16_t len)
 			process_png(&data[15], len - 15);
 			// acknowledge receipt
 			unsigned char bytes[] = {0x5, 0x0, 0x8, 0x80, 0x1};
-			bt_gatt_notify(NULL, &led_svc.attrs[4], &bytes, sizeof(bytes));
+			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes, sizeof(bytes));
 			unsigned char bytes2[] = {0x5, 0x0, 0x3, 0x0, 0x3};
-			bt_gatt_notify(NULL, &led_svc.attrs[4], &bytes2, sizeof(bytes2));
+			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes2, sizeof(bytes2));
 		}
 	}
 	
@@ -782,6 +829,9 @@ int main(void)
 	size_t count = 1;
 	bt_id_get(&addr, &count);
 	bt_addr_le_to_str(&addr, addr_s, sizeof(addr_s));
+	// null terminated device name
+	char updated_name[sizeof(device_name)+1];
+	updated_name[sizeof(device_name)] = '\0';
 
 	LOG_INF("Bluetooth Address: %s", addr_s);
 	memcpy(&device_name[sizeof(device_name) - 8], &addr_s[6], 2);
@@ -790,6 +840,9 @@ int main(void)
 	memcpy(&device_name[sizeof(device_name) - 2], &addr_s[15], 2);
 	LOG_INF("Device name: %s.", device_name);
 	bt_le_adv_update_data(ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+	memcpy(&updated_name, &device_name, sizeof(device_name));
+	bt_set_name((const char *)updated_name);
+
 
 	STATS_SET(smp_svr_stats, version_major, FW_VERSION_MAJOR);
 	STATS_SET(smp_svr_stats, version_minor, FW_VERSION_MINOR);
