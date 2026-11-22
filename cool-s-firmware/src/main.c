@@ -43,6 +43,10 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/fs/littlefs.h>
 
+#include "lodepng.h"
+#include "gifdec.h"
+// #include "AnimatedGIF.h"
+
 #ifdef CONFIG_MCUMGR_GRP_STAT
 #include <zephyr/mgmt/mcumgr/grp/stat_mgmt/stat_mgmt.h>
 #endif
@@ -50,11 +54,32 @@
 #include <zephyr/mgmt/mcumgr/transport/smp_bt.h>
 #include <zephyr/dfu/mcuboot.h>
 
+#include <zephyr/data/json.h>
+
+struct settings {
+    float brightness;
+};
+
+gd_GIF *gif;
+
+uint8_t gif_frame[32*16*3];
+uint8_t *gif_color;
+
+uint8_t gif_file_buffer[1024];
+size_t gif_file_size = 0;
+
+struct settings global_settings;
+struct settings last_saved_settings;
+
+static const struct json_obj_descr settings_descr[] = {
+    JSON_OBJ_DESCR_PRIM(struct settings, brightness, JSON_TOK_NUMBER),
+};
+
 #define STORAGE_PARTITION_LABEL	storage_partition
 #define STORAGE_PARTITION_ID	FIXED_PARTITION_ID(STORAGE_PARTITION_LABEL)
 
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 5
+#define FW_VERSION_MINOR 6
 
 /* Define an example stats group; approximates seconds since boot. */
 STATS_SECT_START(smp_svr_stats)
@@ -82,9 +107,9 @@ static struct fs_mount_t littlefs_mnt = {
 	.mnt_point = "/lfs1"
 };
 
+// GIFIMAGE gif;
 
-// #define SPNG_USE_MINIZ
-// #include "spng.h"
+
 static struct k_sem sync;
 
 static uint8_t device_name[] = {'L', 'E', 'D', '_', 'B', 'L','E','_','C', 'O', 'O', 'L','0','0','0','0'};
@@ -98,12 +123,19 @@ const struct device *led_en = DEVICE_DT_GET(DT_NODELABEL(led_pwr));
 #endif
 static struct led_rgb pixels_raw[STRIP_NUM_PIXELS];
 static struct led_rgb pixels[STRIP_NUM_PIXELS];
+
+// display state machine: entering a display mode goes through a LOADING_*
+// state, where the main loop loads the corresponding file and then
+// transitions into the display state
+enum display_state {
+	DISPLAY_LOADING_STATIC,
+	DISPLAY_STATIC,
+	DISPLAY_LOADING_GIF,
+	DISPLAY_GIF,
+};
+static enum display_state display_state = DISPLAY_LOADING_STATIC;
 static const struct device *const strip = DEVICE_DT_GET(STRIP_NODE);
 
-#define GIF_IMPLEMENTATION
-#include "gif.h"
-#define SCRATCH_BUFFER_SIZE GIF_SCRATCH_BUFFER_REQUIRED_SIZE
-uint8_t scratch_buffer[SCRATCH_BUFFER_SIZE]; 
 
 struct pixel_animation_frame {
 	uint16_t duration_ms;
@@ -116,7 +148,7 @@ struct pixel_animation {
 };
 
 struct pixel_animation current_animation;
-bool playAnimation = false;
+bool gifLoaded = false;
 
 LOG_MODULE_REGISTER(app);
 
@@ -148,25 +180,9 @@ static struct k_work adv_work;
 #define BT_UUID_IPIXEL_NOTIFY_VAL BT_UUID_16_ENCODE(0xfa03)
 	// BT_UUID_128_ENCODE(0x0000fa03, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
 
-// #define BT_UUID_IPIXEL_SRV_AE_VAL BT_UUID_128_ENCODE(0x0000ae00, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
-
-// #define BT_UUID_IPIXEL_WRITE_AE_VAL BT_UUID_128_ENCODE(0x0000ae01, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
-
-// #define BT_UUID_IPIXEL_NOTIFY_AE_VAL BT_UUID_128_ENCODE(0x0000ae02, 0x0000, 0x1000, 0x8000, 0x00805f9b34fb)
-
-
-// #define BT_UUID_IPIXEL_SRV    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_SRV_VAL)
-// #define BT_UUID_IPIXEL_WRITE    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_WRITE_VAL)
-// #define BT_UUID_IPIXEL_NOTIFY    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_NOTIFY_VAL)
-
 #define BT_UUID_IPIXEL_SRV    BT_UUID_DECLARE_16(0x00fa)
 #define BT_UUID_IPIXEL_WRITE    BT_UUID_DECLARE_16(0xfa02)
 #define BT_UUID_IPIXEL_NOTIFY    BT_UUID_DECLARE_16(0xfa03)
-
-// #define BT_UUID_IPIXEL_SRV_AE    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_SRV_AE_VAL)
-// #define BT_UUID_IPIXEL_WRITE_AE    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_WRITE_AE_VAL)
-// #define BT_UUID_IPIXEL_NOTIFY_AE    BT_UUID_DECLARE_128(BT_UUID_IPIXEL_NOTIFY_AE_VAL)
-
 
 
 static const struct bt_data ad[] = {
@@ -189,7 +205,7 @@ struct __attribute__((packed)) image_header {
 
 int recovery_timeout = 0;
 int shutdown_timeout = 0;
-float global_brightness = 0.3f;
+
 static const struct gpio_dt_spec wakeup_button = GPIO_DT_SPEC_GET(DT_ALIAS(wakeup), gpios);
 
 #define GAMMA_VAL 2.0
@@ -198,7 +214,7 @@ static const struct gpio_dt_spec wakeup_button = GPIO_DT_SPEC_GET(DT_ALIAS(wakeu
 
 void parseCommandPacket(const void *buf, uint16_t len);
 void imageCommand(const void *buf, uint16_t len);
-void process_gif(const uint8_t* gif_data, size_t gif_size);
+void process_gif();
 void process_png(const uint8_t* png_data, size_t png_size);
 void live_draw(uint8_t pixel_index, struct led_rgb color);
 struct led_rgb gamma_correction(struct led_rgb color);
@@ -211,9 +227,38 @@ void render();
 void check_for_recovery_mode();
 void check_power_off();
 void playback_animation(struct pixel_animation *animation);
+void display_state_set(enum display_state state);
+void display_state_process();
+void toggle_display_mode();
+int load_pixels_from_file(const char *filename);
+int load_gif();
 int save_pixels_to_file(const char *filename);
+int save_gif_to_file(const char *filename, const uint8_t* gif_data, size_t gif_size);
+int save_settings();
+int load_settings();
+int default_settings();
+void print_settings();
 
-static ssize_t write_led(struct bt_conn *conn,
+void save_pending_settings(struct k_work *work)
+{
+    int change_count = 0;
+	change_count += (last_saved_settings.brightness != global_settings.brightness);
+	if(change_count != 0){
+		LOG_INF("Saving changed settings");
+		save_settings();
+	}
+}
+
+K_WORK_DEFINE(save_work, save_pending_settings);
+
+void settings_timer_exp(struct k_timer *dummy)
+{
+    k_work_submit(&save_work);
+}
+
+K_TIMER_DEFINE(save_settings_timer, settings_timer_exp, NULL);
+
+static ssize_t iPixel_write(struct bt_conn *conn,
 			 const struct bt_gatt_attr *attr,
 			 const void *buf,
 			 uint16_t len, uint16_t offset, uint8_t flags);
@@ -232,30 +277,15 @@ BT_GATT_PRIMARY_SERVICE(BT_UUID_IPIXEL_SRV),
 			       BT_GATT_CHRC_WRITE_WITHOUT_RESP | BT_GATT_CHRC_WRITE,
 			       BT_GATT_PERM_WRITE |
 			       BT_GATT_PERM_PREPARE_WRITE,
-			       read_led, write_led, NULL),
-	BT_GATT_CUD("TR2310R003-21", BT_GATT_PERM_READ),
+			       NULL, iPixel_write, NULL),
+	BT_GATT_CUD("COOL-S", BT_GATT_PERM_READ),
 	BT_GATT_CHARACTERISTIC(BT_UUID_IPIXEL_NOTIFY,
 			       BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ,
-			       read_led, write_led, NULL),
+			       read_led, NULL, NULL),
 	BT_GATT_CCC(lbslc_ccc_cfg_changed,
 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
-
-// BT_GATT_SERVICE_DEFINE(led_svc_ae,
-// BT_GATT_PRIMARY_SERVICE(BT_UUID_IPIXEL_SRV_AE),
-// 	BT_GATT_CHARACTERISTIC(BT_UUID_IPIXEL_WRITE_AE,
-// 			       BT_GATT_CHRC_WRITE_WITHOUT_RESP,
-// 			       BT_GATT_PERM_WRITE |
-// 			       BT_GATT_PERM_PREPARE_WRITE,
-// 			       read_led, write_led, NULL),
-// 	BT_GATT_CHARACTERISTIC(BT_UUID_IPIXEL_NOTIFY_AE,
-// 			       BT_GATT_CHRC_NOTIFY,
-// 			       BT_GATT_PERM_READ,
-// 			       read_led, write_led, NULL),
-// 	BT_GATT_CCC(lbslc_ccc_cfg_changed,
-// 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
-// );
 
 
 static void lbslc_ccc_cfg_changed(const struct bt_gatt_attr *attr,
@@ -272,13 +302,12 @@ static void lbslc_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 			uint8_t info_notify[11] = {0x0b, 0x00, 0x01, 0x80, DEVICE_TYPE, 0x02, 0x2c, 0x00, 0x00, 0x01, 0x00};
 			bt_gatt_notify(NULL, &led_svc.attrs[5], &info_notify, sizeof(info_notify));
 			// bt_gatt_notify(NULL, &led_svc_ae.attrs[4], &info_notify, sizeof(info_notify));
-
 		
 	}
 }
 
 
-static ssize_t write_led(struct bt_conn *conn,
+static ssize_t iPixel_write(struct bt_conn *conn,
 			 const struct bt_gatt_attr *attr,
 			 const void *buf,
 			 uint16_t len, uint16_t offset, uint8_t flags)
@@ -287,11 +316,11 @@ static ssize_t write_led(struct bt_conn *conn,
 
 	LOG_INF("\nNew packet of length: %u", len);
 	
-	if(len < 250){
+	if(len < 500){
 		LOG_HEXDUMP_INF(buf, len, "data:");
 	}
-	// LOG_INF("Offset: %u", offset);
-	// LOG_INF("Flags: %u", flags);
+	LOG_INF("Offset: %u", offset);
+	LOG_INF("Flags: %u", flags);
 
 	if(len >= 4){
 		if(((uint8_t *)buf)[3] == 0x80) {
@@ -305,7 +334,6 @@ static ssize_t write_led(struct bt_conn *conn,
 		LOG_ERR("Write led: Incorrect data length: %u", len);
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
 	}
-
 
 	return len;
 }
@@ -362,6 +390,8 @@ void imageCommand(const void *buf, uint16_t len)
 				if(data[4] == 0x01){
 					LOG_INF("Live draw start packet received");
 					clear_display();
+					// live drawing renders directly, no file load needed
+					display_state_set(DISPLAY_STATIC);
 				} else if(data[4] == 0x00){
 					LOG_INF("Live draw stop packet received");
 					// respond with ack by sending packet back
@@ -375,6 +405,8 @@ void imageCommand(const void *buf, uint16_t len)
 			break;
 		case 0x0a:
 			LOG_INF("Live draw pixel data packet received");
+			// live drawing renders directly, no file load needed
+			display_state_set(DISPLAY_STATIC);
 			if(len > 10){
 				LOG_ERR("Invalid live draw pixel data packet length: %u", len);
 				break;
@@ -402,19 +434,29 @@ void imageCommand(const void *buf, uint16_t len)
 		// GIF
 		if(img_header.data_type == 0x03 && data[15] == 0x47 && data[16] == 0x49 && data[17] == 0x46){
 			LOG_INF("GIF header detected");
-			process_gif(&data[15], len - 15);
 			// acknowledge receipt
 			unsigned char bytes[] = {0x5, 0x0, 0x8, 0x80, 0x1};
 			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes, sizeof(bytes));
 			unsigned char bytes2[] = {0x5, 0x0, 0x3, 0x0, 0x3};
 			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes2, sizeof(bytes2));
-			playAnimation = true;
+
+			gif_file_size = len - 15;
+			LOG_HEXDUMP_DBG(data,len,"Raw GIF packet");
+			memcpy(gif_file_buffer,&data[15],gif_file_size);
+			
+			save_gif_to_file("/lfs1/default.gif", gif_file_buffer, gif_file_size);
+			process_gif();
+			if (gif) {
+				display_state_set(DISPLAY_GIF);
+			}
 		}
 		
 		// PNG
 		if(data[15] == 0x89 && data[16] == 0x50 && data[17] == 0x4e && data[18] == 0x47){
 			LOG_INF("PNG header detected");
 			process_png(&data[15], len - 15);
+			save_pixels_to_file("/lfs1/default.dat");
+			display_state_set(DISPLAY_STATIC);
 			// acknowledge receipt
 			unsigned char bytes[] = {0x5, 0x0, 0x8, 0x80, 0x1};
 			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes, sizeof(bytes));
@@ -475,7 +517,7 @@ void render(){
 		k_sleep(K_USEC(500));
 	}
 	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
-		pixels[i] = set_brightness(pixels_raw[i], global_brightness);
+		pixels[i] = set_brightness(pixels_raw[i], global_settings.brightness);
 		pixels[i] = gamma_correction(pixels[i]);
 	}
 	int rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
@@ -485,66 +527,116 @@ void render(){
 }
 
 void set_global_brightness(float brightness) {
-	global_brightness = brightness;
+	global_settings.brightness = brightness;
 	render();
 }
 
 void process_png(const uint8_t* png_data, size_t png_size) {
 	LOG_INF("Decoding PNG");
-
-}
-
-void process_gif(const uint8_t* gif_data, size_t gif_size) {
-	LOG_INF("Decoding GIF");
-    GIF_Context ctx;
-    int result = gif_init(&ctx, gif_data, gif_size, 
-                         scratch_buffer, sizeof(scratch_buffer));
-    
-    if(result != GIF_SUCCESS) {
-        LOG_ERR("Error: %s\n", gif_get_error_string(result));
-        return;
-    }
-
-    int width, height;
-    gif_get_info(&ctx, &width, &height);
-	LOG_INF("GIF dimensions: %dx%d", width, height);
-    
-    uint8_t* frame_buffer = malloc(width * height * 3);
-	if(frame_buffer == NULL) {
-		LOG_ERR("Failed to allocate GIF frame buffer\n");
-		gif_close(&ctx);
+	unsigned char* frame_buffer = 0;
+	unsigned int width, height;
+	unsigned char error = lodepng_decode_memory(&frame_buffer, &width, &height, png_data, png_size, LCT_RGB, 8);
+	if(error) {
+		LOG_ERR("PNG decode error: %s", lodepng_error_text(error));
+		free(frame_buffer);
 		return;
 	}
-    int delay_ms;
-    int frame_result;
-    
-    while((frame_result = gif_next_frame(&ctx, frame_buffer, &delay_ms)) > 0) {
-        // Process frame
-        // delay_ms contains frame duration
-        LOG_INF("Frame decoded, delay: %d ms", delay_ms);
-		LOG_HEXDUMP_INF(frame_buffer, 30 * 3, "Decoded GIF frame data:");
-		// save frame to current_animation
-		struct pixel_animation_frame frame;
-		frame.duration_ms = delay_ms;
-		memcpy(frame.pixels, frame_buffer, sizeof(frame.pixels));
-		current_animation.frames = realloc(current_animation.frames, sizeof(struct pixel_animation_frame) * (current_animation.num_frames + 1));
-		memcpy(&current_animation.frames[current_animation.num_frames], &frame, sizeof(struct pixel_animation_frame));
-		current_animation.num_frames++;
-    }
-    
-    if(frame_result < 0) {
-        LOG_ERR("Decoding error: %s\n", gif_get_error_string(frame_result));
-    }
-    
-    gif_close(&ctx);
-    free(frame_buffer);
+	LOG_INF("PNG decoded");
+	LOG_HEXDUMP_DBG(frame_buffer, 30 * 3, "Decoded PNG frame data:");
+	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
+		pixels_raw[i].r = frame_buffer[i * 3];
+		pixels_raw[i].g = frame_buffer[i * 3 + 1];
+		pixels_raw[i].b = frame_buffer[i * 3 + 2];
+	}
+	render();
+	free(frame_buffer);
+}
+
+
+
+void process_gif() {
+	LOG_INF("Decoding GIF");
+	if(gif){
+		gd_close_gif(gif);
+	}
+	gif = gd_open_gif("/lfs1/default.gif");
+	if(!gif){
+		LOG_ERR("GIF open error");
+		return;
+	}
+	return;
 }
 
 void playback_animation(struct pixel_animation *animation) {
-	for(int i = 0; i < animation->num_frames; i++) {
-		memcpy(pixels_raw, animation->frames[i].pixels, sizeof(pixels_raw));
-		render();
-		k_sleep(K_MSEC(animation->frames[i].duration_ms));
+
+	int ret;
+	if(!gif || display_state != DISPLAY_GIF){
+		return;
+	}
+	ret = gd_get_frame(gif);
+	if (ret == -1){return;}
+	if (ret == 0){
+		// reached the GIF end: loop back to the first frame
+		gd_rewind(gif);
+		ret = gd_get_frame(gif);
+		if (ret <= 0){return;}
+	}
+	gd_render_frame(gif, gif_frame);
+	// only the first row of the frame is displayed on the LED strip;
+	// for GIFs with a global color table, pixels matching the background
+	// color are blanked (bgindex is meaningless without a GCT)
+	uint8_t *bgcolor = gif->gct.size ? &gif->gct.colors[gif->bgindex * 3] : NULL;
+	for (int j = 0; j < gif->width && j < STRIP_NUM_PIXELS; j++) {
+		uint8_t *px = &gif_frame[j * 3];
+		if (bgcolor && !memcmp(bgcolor, px, 3)) {
+			pixels_raw[j].r = 0;
+			pixels_raw[j].g = 0;
+			pixels_raw[j].b = 0;
+		} else {
+			pixels_raw[j].r = px[0];
+			pixels_raw[j].g = px[1];
+			pixels_raw[j].b = px[2];
+		}
+	}
+	render();
+	// GIF delay is in centiseconds
+	k_sleep(K_MSEC(gif->gce.delay * 10));
+}
+
+void display_state_set(enum display_state state) {
+	display_state = state;
+}
+
+void display_state_process() {
+	switch (display_state) {
+	case DISPLAY_LOADING_STATIC:
+		LOG_INF("Display state: loading static image");
+		if (load_pixels_from_file("/lfs1/default.dat") != 0) {
+			clear_display();
+		}
+		display_state = DISPLAY_STATIC;
+		break;
+	case DISPLAY_LOADING_GIF:
+		LOG_INF("Display state: loading GIF");
+		if (load_gif() != 0 || !gif) {
+			// no usable GIF: fall back to the static image
+			LOG_WRN("No GIF available, falling back to static image");
+			display_state = DISPLAY_LOADING_STATIC;
+		} else {
+			gd_rewind(gif);
+			display_state = DISPLAY_GIF;
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+void toggle_display_mode() {
+	if (display_state == DISPLAY_GIF || display_state == DISPLAY_LOADING_GIF) {
+		display_state_set(DISPLAY_LOADING_STATIC);
+	} else {
+		display_state_set(DISPLAY_LOADING_GIF);
 	}
 }
 
@@ -559,16 +651,8 @@ static ssize_t read_led(struct bt_conn *conn,
 	LOG_INF("Attribute read, handle: %u, conn: %p", attr->handle,
 		(void *)conn);
 
-	// if (lbs_cb.button_cb) {
-	// 	button_state = lbs_cb.button_cb();
-	// 	return bt_gatt_attr_read(conn, attr, buf, len, offset, value,
-	// 				 sizeof(*value));
-	// }
-
 	return 0;
 }
-
-
 
 static void adv_work_handler(struct k_work *work)
 {
@@ -594,14 +678,11 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		return;
 	}
 	LOG_INF("Connected\n");
-	dk_set_led_on(CON_STATUS_LED);
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	LOG_INF("Disconnected, reason 0x%02x %s\n", reason, bt_hci_err_to_str(reason));
-
-	dk_set_led_off(CON_STATUS_LED);
 }
 
 static void recycled_cb(void)
@@ -627,10 +708,16 @@ static void input_event_callback(struct input_event *evt, void *user_data)
 		case INPUT_KEY_0:
 			LOG_INF("Button 0 state: %s", evt->value ? "pressed" : "released");
 			button0 = evt->value;
+			if (evt->value) {
+				toggle_display_mode();
+			}
 			break;
 		case INPUT_KEY_1:
 			LOG_INF("Button 1 state: %s", evt->value ? "pressed" : "released");
 			button1 = evt->value;
+			if (evt->value) {
+				toggle_display_mode();
+			}
 			break;
 		case INPUT_KEY_2:
 			LOG_INF("Button 2 state: %s", evt->value ? "pressed" : "released");
@@ -683,6 +770,11 @@ void check_for_recovery_mode()
 	if(recovery_timeout != 0 && k_uptime_get() > recovery_timeout) {
 		LOG_INF("Rebooting into MCUboot serial recovery mode now...");
 		recovery_timeout = 0;
+		int rc = fs_unmount(&littlefs_mnt);
+		if (rc < 0) {
+			LOG_ERR("Error unmounting littlefs [%d]", rc);
+		}
+		k_yield();
 		sys_reboot(SYS_REBOOT_WARM);
 	}
 	if(button0 && button1 && button2 && button3){
@@ -699,6 +791,29 @@ void check_for_recovery_mode()
 	}
 }
 
+int save_gif_to_file(const char *filename, const uint8_t* gif_data, size_t gif_size)
+{
+	struct fs_file_t file;
+	int rc;
+	LOG_HEXDUMP_INF(gif_data,gif_size,"GIF data to be written to file:");
+	fs_file_t_init(&file);
+
+	rc = fs_open(&file, filename, FS_O_CREATE | FS_O_WRITE);
+	if (rc < 0) {
+		LOG_ERR("Error opening file %s: %d", filename, rc);
+		return rc;
+	}
+	fs_seek(&file, 0 ,0);
+	rc = fs_write(&file, gif_data, gif_size);
+	if (rc < 0) {
+		LOG_ERR("Error writing to file %s: %d", filename, rc);
+		fs_close(&file);
+		return rc;
+	}
+	fs_close(&file);
+	LOG_INF("Saved GIF data to file %s", filename);
+	return 0;
+}
 
 int save_pixels_to_file(const char *filename)
 {
@@ -721,6 +836,109 @@ int save_pixels_to_file(const char *filename)
 	fs_close(&file);
 	LOG_INF("Saved pixel data to file %s", filename);
 	return 0;
+}
+
+int save_settings(){
+    char buffer[256];
+    int rc;
+	
+    rc = json_obj_encode_buf(settings_descr, ARRAY_SIZE(settings_descr),
+                              &global_settings,
+                              buffer, sizeof(buffer));
+    if (rc < 0) {
+		LOG_ERR("Unable to encode settings to JSON");
+        return rc;
+    }
+	struct fs_file_t file;
+	
+
+	fs_file_t_init(&file);
+
+	rc = fs_open(&file, "/lfs1/settings.json", FS_O_CREATE | FS_O_WRITE);
+	if (rc < 0) {
+		LOG_ERR("Error opening settings.json: %d", rc);
+		return rc;
+	}
+	rc = fs_write(&file, buffer, sizeof(buffer));
+	if (rc < 0) {
+		LOG_ERR("Error writing to file settings.json: %d", rc);
+		fs_close(&file);
+		return rc;
+	}
+	fs_close(&file);
+	last_saved_settings = global_settings;
+	return 0;
+}
+
+int load_gif(){
+
+	struct fs_file_t file;
+	int rc;
+
+	fs_file_t_init(&file);
+
+	rc = fs_open(&file, "/lfs1/default.gif", FS_O_READ);
+	if (rc < 0) {
+		LOG_ERR("Error opening default.gif: %d", rc);
+		return rc;
+	}
+	rc = fs_read(&file, gif_file_buffer, sizeof(gif_file_buffer));
+	if (rc < 0) {
+		LOG_ERR("Error reading from file default.gif: %d", rc);
+		fs_close(&file);
+		return rc;
+	}
+	gif_file_size = rc;
+	fs_close(&file);
+	LOG_INF("loaded GIF of size %d from disk",rc);
+	process_gif();
+	return 0;
+}
+
+int load_settings(void)
+{
+
+	struct fs_file_t file;
+	int rc;
+	char buffer[256];
+
+	fs_file_t_init(&file);
+
+	rc = fs_open(&file, "/lfs1/settings.json", FS_O_READ);
+	if (rc < 0) {
+		LOG_ERR("Error opening settings.json: %d", rc);
+		return rc;
+	}
+	rc = fs_read(&file, buffer, sizeof(buffer));
+	if (rc < 0) {
+		LOG_ERR("Error reading from file settings.json: %d", rc);
+		fs_close(&file);
+		return rc;
+	}
+	fs_close(&file);
+
+    rc = json_obj_parse(buffer, strlen(buffer),
+                         settings_descr, ARRAY_SIZE(settings_descr),
+                         &global_settings);
+    if (rc < 0) {
+        LOG_ERR("Unable to decode settings to JSON");
+		return rc;
+    }
+
+	last_saved_settings = global_settings;
+
+	return 0;
+}
+
+int default_settings(){
+	global_settings.brightness = 0.3f;
+	last_saved_settings = global_settings;
+	return 0;
+}
+
+void print_settings(){
+	LOG_INF("Settings:");
+	LOG_INF("Brightness: %f",(double)global_settings.brightness);
 }
 
 int load_pixels_from_file(const char *filename)
@@ -761,6 +979,11 @@ void check_power_off(){
 			printf("Could not configure wakeup button GPIO interrupt (%d)\n", rc);
 		}
 		regulator_disable(led_en);
+		rc = fs_unmount(&littlefs_mnt);
+		if (rc < 0) {
+			LOG_ERR("Error unmounting littlefs [%d]", rc);
+		}
+		k_yield();
 		sys_poweroff();
 	}
 	if(button2 && button3){
@@ -778,12 +1001,8 @@ void check_power_off(){
 
 int main(void)
 {
-	int blink_status = 0;
 	int err;
-	size_t color = 0;
 	int rc;
-	// NRF_POWER->GPREGRET = 0x57;
-	// sys_reboot(0x57);
 	regulator_enable(led_en);
 	LOG_INF("build time: " __DATE__ " " __TIME__);
 
@@ -799,17 +1018,16 @@ int main(void)
 		LOG_ERR("Error mounting littlefs [%d]", rc);
 	}
 
+	if(load_settings() != 0){
+		LOG_WRN("Falling back to default settings");
+		default_settings();
+	}
+	print_settings();
+
 	if (!device_is_ready(strip)) {
 		LOG_ERR("LED strip device %s is not ready", strip->name);
 		return 0;
 	}
-
-	err = dk_leds_init();
-	if (err) {
-		LOG_INF("LEDs init failed (err %d)\n", err);
-		return 0;
-	}
-
 
 	err = bt_enable(NULL);
 	if (err) {
@@ -838,11 +1056,11 @@ int main(void)
 	memcpy(&device_name[sizeof(device_name) - 6], &addr_s[9], 2);
 	memcpy(&device_name[sizeof(device_name) - 4], &addr_s[12], 2);
 	memcpy(&device_name[sizeof(device_name) - 2], &addr_s[15], 2);
+
 	LOG_INF("Device name: %s.", device_name);
 	bt_le_adv_update_data(ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
 	memcpy(&updated_name, &device_name, sizeof(device_name));
 	bt_set_name((const char *)updated_name);
-
 
 	STATS_SET(smp_svr_stats, version_major, FW_VERSION_MAJOR);
 	STATS_SET(smp_svr_stats, version_minor, FW_VERSION_MINOR);
@@ -850,8 +1068,10 @@ int main(void)
 
 	k_work_init(&adv_work, adv_work_handler);
 	advertising_start();
-	clear_display();
-	load_pixels_from_file("/lfs1/default.dat");
+
+	// we check every few seconds for outstanding settings changes
+	// we don't want to wear out flash too much by constant small writes
+	k_timer_start(&save_settings_timer, K_SECONDS(5), K_SECONDS(5));
 	
 	if (boot_is_img_confirmed() == 0) {
         LOG_WRN("Boot image not confirmed. Confirming now.");
@@ -859,12 +1079,13 @@ int main(void)
     }
 	
 	for (;;) {
-		// dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
-		
+
 		// STATS_INC(smp_svr_stats, ticks);
-		// k_sleep(K_MSEC(RUN_LED_BLINK_INTERVAL));
-		if(playAnimation) {
+		display_state_process();
+		if(display_state == DISPLAY_GIF) {
 			playback_animation(&current_animation);
+		}else{
+			k_sleep(K_MSEC(50));
 		}
 		k_sem_take(&sync, K_MSEC(1));
 		check_for_recovery_mode();
