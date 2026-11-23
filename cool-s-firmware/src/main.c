@@ -45,6 +45,11 @@
 
 #include "lodepng.h"
 #include "gifdec.h"
+#include "update_approval.h"
+#include "update_trial.h"
+#include "media_files.h"
+#include "preview.h"
+#include "lua_anim.h"
 // #include "AnimatedGIF.h"
 
 #ifdef CONFIG_MCUMGR_GRP_STAT
@@ -61,12 +66,12 @@ struct settings {
 };
 
 gd_GIF *gif;
+/* the GIF plays from the preview buffer, not from a file */
+static bool gif_is_preview;
 
-uint8_t gif_frame[32*16*3];
+uint8_t gif_frame[GD_MAX_PIXELS * 3];
 uint8_t *gif_color;
-
-uint8_t gif_file_buffer[1024];
-size_t gif_file_size = 0;
+int64_t gif_next_frame_at;
 
 struct settings global_settings;
 struct settings last_saved_settings;
@@ -79,13 +84,14 @@ static const struct json_obj_descr settings_descr[] = {
 #define STORAGE_PARTITION_ID	FIXED_PARTITION_ID(STORAGE_PARTITION_LABEL)
 
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 6
+#define FW_VERSION_MINOR 7
 
 /* Define an example stats group; approximates seconds since boot. */
 STATS_SECT_START(smp_svr_stats)
 STATS_SECT_ENTRY(ticks)
 STATS_SECT_ENTRY(version_major)
 STATS_SECT_ENTRY(version_minor)
+STATS_SECT_ENTRY(upload_approval)
 STATS_SECT_END;
 
 /* Assign a name to the `ticks` stat. */
@@ -93,6 +99,7 @@ STATS_NAME_START(smp_svr_stats)
 STATS_NAME(smp_svr_stats, ticks)
 STATS_NAME(smp_svr_stats, version_major)
 STATS_NAME(smp_svr_stats, version_minor)
+STATS_NAME(smp_svr_stats, upload_approval)
 STATS_NAME_END(smp_svr_stats);
 
 /* Define an instance of the stats group. */
@@ -132,8 +139,31 @@ enum display_state {
 	DISPLAY_STATIC,
 	DISPLAY_LOADING_GIF,
 	DISPLAY_GIF,
+	DISPLAY_LOADING_LUA,
+	DISPLAY_LUA,
 };
-static enum display_state display_state = DISPLAY_LOADING_STATIC;
+
+/* the kinds of files the badge shows, in the order the top buttons step through them */
+enum media_kind {
+	MEDIA_PNG,
+	MEDIA_GIF,
+	MEDIA_LUA,
+	MEDIA_KINDS,
+};
+
+static const struct {
+	const char *dir;
+	const char *default_path;
+	enum display_state loading;
+} media_kinds[MEDIA_KINDS] = {
+	[MEDIA_PNG] = {"png", DEFAULT_PNG_PATH, DISPLAY_LOADING_STATIC},
+	[MEDIA_GIF] = {"gif", DEFAULT_GIF_PATH, DISPLAY_LOADING_GIF},
+	[MEDIA_LUA] = {"lua", DEFAULT_LUA_PATH, DISPLAY_LOADING_LUA},
+};
+/* set from the Bluetooth and input threads, handled in the main loop */
+static volatile enum display_state display_state = DISPLAY_LOADING_STATIC;
+static bool storage_ok;
+static volatile bool bluetooth_ok;
 static const struct device *const strip = DEVICE_DT_GET(STRIP_NODE);
 
 
@@ -164,10 +194,42 @@ LOG_MODULE_REGISTER(app);
 
 #define USER_BUTTON             DK_BTN1_MSK
 
-static bool button0 = false;
-static bool button1 = false;
-static bool button2 = false;
-static bool button3 = false;
+/*
+ * Buttons, as the input thread sees them. Top right and top left step
+ * forwards and backwards through the modes (static image, GIF, Lua script),
+ * bottom right and bottom left through the files of that kind. A press only
+ * acts on release, and not at all if it was part of a combination or
+ * answered the upload prompt.
+ */
+enum {
+	BUTTON_TOP_RIGHT = 0,
+	BUTTON_TOP_LEFT = 1,
+	BUTTON_BOTTOM_RIGHT = 2,
+	BUTTON_BOTTOM_LEFT = 3,
+	BUTTON_COUNT = 4,
+};
+static volatile bool button_held[BUTTON_COUNT];
+// a release without a press seen, like a button held through boot, does nothing
+static bool button_spent[BUTTON_COUNT] = {true, true, true, true};
+
+/* requests from the input and Bluetooth threads, handled by the main loop */
+enum {
+	REQUEST_NEXT_MODE = BIT(0),
+	REQUEST_PREVIOUS_MODE = BIT(6),
+	REQUEST_RUN_SCRIPT = BIT(7),
+	REQUEST_NEXT = BIT(1),
+	REQUEST_PREVIOUS = BIT(2),
+	REQUEST_SAVE_DRAWING = BIT(3),
+	REQUEST_PREVIEW_PLAY = BIT(4),
+	REQUEST_PREVIEW_END = BIT(5),
+};
+static atomic_t requests;
+
+/* 0 shows the default file of the current mode, n the n-th file in its folder */
+static volatile int selected;
+
+#define SET_DEFAULT_HOLD_MS 3000
+#define POWER_OFF_HOLD_MS 1000
 static bool                   notify_enabled;
 static struct k_work adv_work;
 	
@@ -206,7 +268,15 @@ struct __attribute__((packed)) image_header {
 int recovery_timeout = 0;
 int shutdown_timeout = 0;
 
-static const struct gpio_dt_spec wakeup_button = GPIO_DT_SPEC_GET(DT_ALIAS(wakeup), gpios);
+/*
+ * Any button but the top right one wakes the badge. Waking is a reset, and
+ * the top right button held during a reset starts USB recovery.
+ */
+static const struct gpio_dt_spec wakeup_buttons[] = {
+	GPIO_DT_SPEC_GET(DT_NODELABEL(button1), gpios),
+	GPIO_DT_SPEC_GET(DT_NODELABEL(button2), gpios),
+	GPIO_DT_SPEC_GET(DT_NODELABEL(button3), gpios),
+};
 
 #define GAMMA_VAL 2.0
 // #define DEVICE_TYPE 0x85 // 64x20
@@ -214,8 +284,7 @@ static const struct gpio_dt_spec wakeup_button = GPIO_DT_SPEC_GET(DT_ALIAS(wakeu
 
 void parseCommandPacket(const void *buf, uint16_t len);
 void imageCommand(const void *buf, uint16_t len);
-void process_gif();
-void process_png(const uint8_t* png_data, size_t png_size);
+int process_gif(const char *path);
 void live_draw(uint8_t pixel_index, struct led_rgb color);
 struct led_rgb gamma_correction(struct led_rgb color);
 struct led_rgb set_brightness(struct led_rgb color, float brightness);
@@ -223,16 +292,14 @@ void set_global_brightness(float brightness);
 void clear_display();
 void display_debug();
 void display_warn();
+void display_upload_prompt();
+void display_flash_white();
 void render();
 void check_for_recovery_mode();
 void check_power_off();
 void playback_animation(struct pixel_animation *animation);
 void display_state_set(enum display_state state);
 void display_state_process();
-void toggle_display_mode();
-int load_pixels_from_file(const char *filename);
-int load_gif();
-int save_pixels_to_file(const char *filename);
 int save_gif_to_file(const char *filename, const uint8_t* gif_data, size_t gif_size);
 int save_settings();
 int load_settings();
@@ -391,13 +458,16 @@ void imageCommand(const void *buf, uint16_t len)
 					LOG_INF("Live draw start packet received");
 					clear_display();
 					// live drawing renders directly, no file load needed
+					selected = 0;
 					display_state_set(DISPLAY_STATIC);
 				} else if(data[4] == 0x00){
 					LOG_INF("Live draw stop packet received");
 					// respond with ack by sending packet back
 					data[3] = 0x01;
 					bt_gatt_notify(NULL, &led_svc.attrs[5], data, len);
-					save_pixels_to_file("/lfs1/default.dat");
+					// saved by the main loop, which also loads the default files
+					selected = 0;
+					atomic_or(&requests, REQUEST_SAVE_DRAWING);
 				}
 			} else {
 				LOG_WRN("Unknown Draw Command Packet received");
@@ -427,6 +497,11 @@ void imageCommand(const void *buf, uint16_t len)
 		}
 	}else{
 		LOG_INF("Bitmap data packet received, length: %u", len);
+		/* 15 byte header plus the file signature. Shorter would wrap len - 15. */
+		if(len < 15 + 4){
+			LOG_WRN("Bitmap data packet too short");
+			return;
+		}
 		struct image_header img_header;
 		memcpy(&img_header, &data[0], sizeof(img_header));
 		LOG_INF("Image length: %u, data type: %#04x, option: %#02x", img_header.length, img_header.data_type, img_header.option);
@@ -440,23 +515,24 @@ void imageCommand(const void *buf, uint16_t len)
 			unsigned char bytes2[] = {0x5, 0x0, 0x3, 0x0, 0x3};
 			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes2, sizeof(bytes2));
 
-			gif_file_size = len - 15;
 			LOG_HEXDUMP_DBG(data,len,"Raw GIF packet");
-			memcpy(gif_file_buffer,&data[15],gif_file_size);
-			
-			save_gif_to_file("/lfs1/default.gif", gif_file_buffer, gif_file_size);
-			process_gif();
-			if (gif) {
-				display_state_set(DISPLAY_GIF);
+			if (save_gif_to_file(DEFAULT_GIF_PATH, &data[15], len - 15) == 0) {
+				// only the main loop may open or close the decoder it is playing from
+				selected = 0;
+				display_state_set(DISPLAY_LOADING_GIF);
 			}
 		}
 		
 		// PNG
 		if(data[15] == 0x89 && data[16] == 0x50 && data[17] == 0x4e && data[18] == 0x47){
 			LOG_INF("PNG header detected");
-			process_png(&data[15], len - 15);
-			save_pixels_to_file("/lfs1/default.dat");
-			display_state_set(DISPLAY_STATIC);
+			if (png_to_pixels(&data[15], len - 15, pixels_raw, STRIP_NUM_PIXELS) == 0) {
+				render();
+				selected = 0;
+				display_state_set(DISPLAY_STATIC);
+				// kept as sent, the badge decodes it again at boot
+				file_write_replace(DEFAULT_PNG_PATH, MEDIA_ROOT "/.ipixel.tmp", &data[15], len - 15);
+			}
 			// acknowledge receipt
 			unsigned char bytes[] = {0x5, 0x0, 0x8, 0x80, 0x1};
 			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes, sizeof(bytes));
@@ -501,6 +577,10 @@ struct led_rgb set_brightness(struct led_rgb color, float brightness) {
 }
 
 void render(){
+	// nothing may paint over, or imitate, the upload prompt
+	if(update_approval_waiting()){
+		return;
+	}
 	// check if if all black and turn off power if so
 	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
 		if(pixels_raw[i].r != 0 || pixels_raw[i].g != 0 || pixels_raw[i].b != 0) {
@@ -531,46 +611,86 @@ void set_global_brightness(float brightness) {
 	render();
 }
 
-void process_png(const uint8_t* png_data, size_t png_size) {
-	LOG_INF("Decoding PNG");
-	unsigned char* frame_buffer = 0;
-	unsigned int width, height;
-	unsigned char error = lodepng_decode_memory(&frame_buffer, &width, &height, png_data, png_size, LCT_RGB, 8);
-	if(error) {
-		LOG_ERR("PNG decode error: %s", lodepng_error_text(error));
-		free(frame_buffer);
-		return;
+
+
+
+// keeps the GIF that is playing if the new one does not open
+int process_gif(const char *path) {
+	LOG_INF("Opening GIF %s", path);
+	gd_GIF *next = gd_open_gif(path);
+	if(!next){
+		LOG_ERR("GIF open error");
+		return -EINVAL;
 	}
-	LOG_INF("PNG decoded");
-	LOG_HEXDUMP_DBG(frame_buffer, 30 * 3, "Decoded PNG frame data:");
-	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
-		pixels_raw[i].r = frame_buffer[i * 3];
-		pixels_raw[i].g = frame_buffer[i * 3 + 1];
-		pixels_raw[i].b = frame_buffer[i * 3 + 2];
-	}
-	render();
-	free(frame_buffer);
-}
-
-
-
-void process_gif() {
-	LOG_INF("Decoding GIF");
 	if(gif){
 		gd_close_gif(gif);
 	}
-	gif = gd_open_gif("/lfs1/default.gif");
-	if(!gif){
-		LOG_ERR("GIF open error");
+	gif = next;
+	gif_is_preview = false;
+	return 0;
+}
+
+void display_preview_play(void) {
+	atomic_or(&requests, REQUEST_PREVIEW_PLAY);
+}
+
+void display_preview_end(void) {
+	atomic_or(&requests, REQUEST_PREVIEW_END);
+}
+
+/* the file in the lua folder to run, for REQUEST_RUN_SCRIPT */
+static atomic_t script_requested;
+
+int display_run_script(const char *name) {
+	char path[MEDIA_PATH_MAX];
+	int count = media_count("lua");
+	for (int i = 1; i <= count; i++) {
+		if (media_path("lua", i, path, sizeof(path)) == 0 &&
+		    strcmp(strrchr(path, '/') + 1, name) == 0) {
+			atomic_set(&script_requested, i);
+			atomic_or(&requests, REQUEST_RUN_SCRIPT);
+			return 0;
+		}
+	}
+	return -ENOENT;
+}
+
+// plays the GIF in the preview buffer, see preview.h
+static void play_preview(void) {
+	size_t len;
+	const uint8_t *data = preview_data(&len);
+	if (preview_receiving() || len == 0) {
 		return;
 	}
-	return;
+	gd_GIF *next = gd_open_gif_memory(data, len);
+	if (!next) {
+		LOG_WRN("The preview is not a GIF the badge can play");
+		return;
+	}
+	if (gif) {
+		gd_close_gif(gif);
+	}
+	gif = next;
+	gif_is_preview = true;
+	gif_next_frame_at = 0;
+	display_state = DISPLAY_GIF;
+}
+
+// the last frame stays up; the buttons go back to the files
+static void end_preview(void) {
+	if (gif_is_preview && display_state == DISPLAY_GIF) {
+		display_state = DISPLAY_STATIC;
+	}
 }
 
 void playback_animation(struct pixel_animation *animation) {
 
 	int ret;
-	if(!gif || display_state != DISPLAY_GIF){
+	if(!gif || display_state != DISPLAY_GIF || k_uptime_get() < gif_next_frame_at){
+		return;
+	}
+	// a new preview is being written over this one
+	if(gif_is_preview && preview_receiving()){
 		return;
 	}
 	ret = gd_get_frame(gif);
@@ -599,32 +719,134 @@ void playback_animation(struct pixel_animation *animation) {
 		}
 	}
 	render();
-	// GIF delay is in centiseconds
-	k_sleep(K_MSEC(gif->gce.delay * 10));
+	// GIF delay is in centiseconds. Don't sleep through it: it can be 11 minutes,
+	// and the main loop also runs the buttons and the upload prompt.
+	gif_next_frame_at = k_uptime_get() + gif->gce.delay * 10;
 }
 
 void display_state_set(enum display_state state) {
 	display_state = state;
 }
 
+static enum media_kind current_kind(void) {
+	switch (display_state) {
+	case DISPLAY_LOADING_GIF:
+	case DISPLAY_GIF:
+		return MEDIA_GIF;
+	case DISPLAY_LOADING_LUA:
+	case DISPLAY_LUA:
+		return MEDIA_LUA;
+	default:
+		return MEDIA_PNG;
+	}
+}
+
+static bool file_exists(const char *path) {
+	struct fs_dirent info;
+	return fs_stat(path, &info) == 0 && info.type == FS_DIR_ENTRY_FILE;
+}
+
+// index 0 is the default file, n the n-th file in the folder
+static int selection_path(enum media_kind kind, int index, char *out, size_t len) {
+	if (index == 0) {
+		strncpy(out, media_kinds[kind].default_path, len - 1);
+		out[len - 1] = 0;
+		return 0;
+	}
+	return media_path(media_kinds[kind].dir, index, out, len);
+}
+
+static int run_script(const char *path) {
+	if (!file_exists(path)) {
+		return -ENOENT;
+	}
+	return lua_anim_start(path);
+}
+
+static int show_static(const char *path) {
+	LOG_INF("Showing %s", path);
+	int rc = png_file_to_pixels(path, pixels_raw, STRIP_NUM_PIXELS);
+	if (rc == 0) {
+		render();
+	}
+	return rc;
+}
+
 void display_state_process() {
+	char path[MEDIA_PATH_MAX];
+	int index = selected;
+	int rc;
+
 	switch (display_state) {
 	case DISPLAY_LOADING_STATIC:
-		LOG_INF("Display state: loading static image");
-		if (load_pixels_from_file("/lfs1/default.dat") != 0) {
-			clear_display();
-		}
+		// change state first, so that a request arriving while loading is not lost
 		display_state = DISPLAY_STATIC;
+		rc = selection_path(MEDIA_PNG, index, path, sizeof(path));
+		if (rc == 0) {
+			rc = show_static(path);
+		}
+		if (rc != 0 && index == 0 && media_path("png", 1, path, sizeof(path)) == 0) {
+			// no default image yet: the first one in the folder
+			rc = show_static(path);
+			if (rc == 0) {
+				selected = 1;
+			}
+		}
+		if (rc != 0) {
+			LOG_WRN("Cannot show image %d: %d", index, rc);
+			// a broken file in the folder leaves the previous picture up
+			if (index == 0) {
+				clear_display();
+			}
+		}
 		break;
 	case DISPLAY_LOADING_GIF:
-		LOG_INF("Display state: loading GIF");
-		if (load_gif() != 0 || !gif) {
-			// no usable GIF: fall back to the static image
-			LOG_WRN("No GIF available, falling back to static image");
-			display_state = DISPLAY_LOADING_STATIC;
-		} else {
+		display_state = DISPLAY_GIF;
+		rc = selection_path(MEDIA_GIF, index, path, sizeof(path));
+		if (rc == 0) {
+			rc = process_gif(path);
+		}
+		if (rc != 0 && index == 0 && media_path("gif", 1, path, sizeof(path)) == 0) {
+			rc = process_gif(path);
+			if (rc == 0) {
+				selected = 1;
+			}
+		}
+		if (rc == 0) {
 			gd_rewind(gif);
-			display_state = DISPLAY_GIF;
+			gif_next_frame_at = 0;
+		} else if (index != 0 && gif) {
+			// a broken file in the folder leaves the previous GIF playing
+			LOG_WRN("Cannot play GIF %d: %d", index, rc);
+		} else {
+			LOG_WRN("No GIF available, falling back to static image");
+			if (display_state == DISPLAY_GIF) {
+				selected = 0;
+				display_state = DISPLAY_LOADING_STATIC;
+			}
+		}
+		break;
+	case DISPLAY_LOADING_LUA:
+		display_state = DISPLAY_LUA;
+		rc = selection_path(MEDIA_LUA, index, path, sizeof(path));
+		if (rc == 0) {
+			rc = run_script(path);
+		}
+		if (rc != 0 && index == 0 && media_path("lua", 1, path, sizeof(path)) == 0) {
+			rc = run_script(path);
+			if (rc == 0) {
+				selected = 1;
+			}
+		}
+		if (rc != 0 && index != 0) {
+			// the script shows that it failed, see lua_anim.c
+			LOG_WRN("Cannot run script %d: %d", index, rc);
+		} else if (rc != 0) {
+			LOG_WRN("No Lua script available, falling back to static image");
+			if (display_state == DISPLAY_LUA) {
+				selected = 0;
+				display_state = DISPLAY_LOADING_STATIC;
+			}
 		}
 		break;
 	default:
@@ -632,12 +854,69 @@ void display_state_process() {
 	}
 }
 
-void toggle_display_mode() {
-	if (display_state == DISPLAY_GIF || display_state == DISPLAY_LOADING_GIF) {
-		display_state_set(DISPLAY_LOADING_STATIC);
-	} else {
-		display_state_set(DISPLAY_LOADING_GIF);
+// whether there is anything to show in a mode; there is always the static image
+static bool kind_available(enum media_kind kind) {
+	return kind == MEDIA_PNG || file_exists(media_kinds[kind].default_path) ||
+	       media_count(media_kinds[kind].dir) > 0;
+}
+
+// the next or previous mode that has something to show
+static void step_mode(int delta) {
+	enum media_kind kind = current_kind();
+	for (int step = 1; step < MEDIA_KINDS; step++) {
+		enum media_kind next = (kind + delta * step + MEDIA_KINDS * step) % MEDIA_KINDS;
+		if (kind_available(next)) {
+			LOG_INF("Showing %s files", media_kinds[next].dir);
+			selected = 0;
+			display_state_set(media_kinds[next].loading);
+			return;
+		}
 	}
+	LOG_INF("Nothing else to show");
+}
+
+// next or previous file of the current kind, the default file first
+static void step_selection(int delta) {
+	enum media_kind kind = current_kind();
+	int count = media_count(media_kinds[kind].dir);
+	if (count < 0) {
+		count = 0;
+	}
+	int first = file_exists(media_kinds[kind].default_path) ? 0 : 1;
+	int span = count + 1 - first;
+	if (span <= 1) {
+		LOG_INF("Nothing else to show");
+		return;
+	}
+	int index = selected;
+	if (index < first || index > count) {
+		// files were removed since
+		index = first;
+	}
+	index = first + ((index - first + delta) % span + span) % span;
+	LOG_INF("Selecting %s file %d of %d", media_kinds[kind].dir, index, count);
+	selected = index;
+	display_state_set(media_kinds[kind].loading);
+}
+
+static void set_selection_as_default(void) {
+	enum media_kind kind = current_kind();
+	char path[MEDIA_PATH_MAX];
+	int index = selected;
+	if (index == 0) {
+		LOG_INF("The default is already showing");
+		return;
+	}
+	if (media_path(media_kinds[kind].dir, index, path, sizeof(path)) != 0) {
+		return;
+	}
+	int rc = file_copy_replace(path, media_kinds[kind].default_path, MEDIA_ROOT "/.default.tmp");
+	if (rc != 0) {
+		LOG_ERR("Could not make %s the default: %d", path, rc);
+		return;
+	}
+	LOG_INF("%s is the new default", path);
+	display_flash_white();
 }
 
 static ssize_t read_led(struct bt_conn *conn,
@@ -663,6 +942,7 @@ static void adv_work_handler(struct k_work *work)
 		return;
 	}
 
+	bluetooth_ok = true;
 	LOG_INF("Advertising successfully started\n");
 }
 
@@ -677,6 +957,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		LOG_INF("Connection failed, err 0x%02x %s\n", err, bt_hci_err_to_str(err));
 		return;
 	}
+	bluetooth_ok = true;
 	LOG_INF("Connected\n");
 }
 
@@ -702,35 +983,60 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 };
 
 
+static int button_index(uint16_t code)
+{
+	switch(code) {
+		case INPUT_KEY_0: return 0;
+		case INPUT_KEY_1: return 1;
+		case INPUT_KEY_2: return 2;
+		case INPUT_KEY_3: return 3;
+		default: return -1;
+	}
+}
+
 static void input_event_callback(struct input_event *evt, void *user_data)
 {
-	switch(evt->code) {
-		case INPUT_KEY_0:
-			LOG_INF("Button 0 state: %s", evt->value ? "pressed" : "released");
-			button0 = evt->value;
-			if (evt->value) {
-				toggle_display_mode();
-			}
-			break;
-		case INPUT_KEY_1:
-			LOG_INF("Button 1 state: %s", evt->value ? "pressed" : "released");
-			button1 = evt->value;
-			if (evt->value) {
-				toggle_display_mode();
-			}
-			break;
-		case INPUT_KEY_2:
-			LOG_INF("Button 2 state: %s", evt->value ? "pressed" : "released");
-			button2 = evt->value;
-			break;
-		case INPUT_KEY_3:
-			LOG_INF("Button 3 state: %s", evt->value ? "pressed" : "released");
-			button3 = evt->value;
-			break;
-		default:
-			LOG_WRN("Unknown button event code: %u", evt->code);
-			break;
+	int index = button_index(evt->code);
+	if (index < 0) {
+		LOG_WRN("Unknown button event code: %u", evt->code);
+		goto sync;
 	}
+	// presses that answer the upload prompt must not also act on the display
+	bool consumed = update_approval_button(index, evt->value);
+	LOG_INF("Button %d %s", index, evt->value ? "pressed" : "released");
+
+	if (evt->value) {
+		button_spent[index] = consumed;
+		// a combination is not also a single press
+		for (int i = 0; i < BUTTON_COUNT; i++) {
+			if (i != index && button_held[i]) {
+				button_spent[i] = true;
+				button_spent[index] = true;
+			}
+		}
+		button_held[index] = true;
+	} else {
+		button_held[index] = false;
+		if (!button_spent[index] && !consumed) {
+			switch (index) {
+			case BUTTON_TOP_RIGHT:
+				atomic_or(&requests, REQUEST_NEXT_MODE);
+				break;
+			case BUTTON_TOP_LEFT:
+				atomic_or(&requests, REQUEST_PREVIOUS_MODE);
+				break;
+			case BUTTON_BOTTOM_RIGHT:
+				atomic_or(&requests, REQUEST_NEXT);
+				break;
+			case BUTTON_BOTTOM_LEFT:
+				atomic_or(&requests, REQUEST_PREVIOUS);
+				break;
+			}
+		}
+		button_spent[index] = true;
+	}
+
+sync:
 	
 	if (evt->sync) {
 		LOG_INF("Input event sync");
@@ -747,6 +1053,43 @@ void display_debug()
 	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
 		pixels_raw[i] = (struct led_rgb){.r = 255, .g = 255, .b = 255};
 	}
+	render();
+}
+
+void display_upload_prompt()
+{
+	const uint32_t period_ms = 2000;
+	const uint32_t min_level = 3;
+	const uint32_t max_level = 48;
+	uint32_t t = k_uptime_get_32() % period_ms;
+	uint32_t ramp = (t < period_ms / 2) ? t : period_ms - t; // 0..1000
+	uint32_t level = min_level + (max_level - min_level) * (ramp * ramp / 1000) / 1000;
+
+	if(!regulator_is_enabled(led_en)) {
+		regulator_enable(led_en);
+		k_sleep(K_USEC(500));
+	}
+	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
+		pixels[i] = (struct led_rgb){.r = level, .g = level * 2 / 3, .b = 0};
+	}
+	int rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+	if (rc) {
+		LOG_ERR("couldn't update strip: %d", rc);
+	}
+}
+
+void display_flash_white()
+{
+	// confirms a button action; fixed level, as the brightness setting can be zero
+	if(!regulator_is_enabled(led_en)) {
+		regulator_enable(led_en);
+		k_sleep(K_USEC(500));
+	}
+	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
+		pixels[i] = (struct led_rgb){.r = 96, .g = 96, .b = 96};
+	}
+	led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+	k_sleep(K_MSEC(200));
 	render();
 }
 
@@ -770,6 +1113,7 @@ void check_for_recovery_mode()
 	if(recovery_timeout != 0 && k_uptime_get() > recovery_timeout) {
 		LOG_INF("Rebooting into MCUboot serial recovery mode now...");
 		recovery_timeout = 0;
+		lua_anim_stop();
 		int rc = fs_unmount(&littlefs_mnt);
 		if (rc < 0) {
 			LOG_ERR("Error unmounting littlefs [%d]", rc);
@@ -777,7 +1121,8 @@ void check_for_recovery_mode()
 		k_yield();
 		sys_reboot(SYS_REBOOT_WARM);
 	}
-	if(button0 && button1 && button2 && button3){
+	if(button_held[BUTTON_TOP_RIGHT] && button_held[BUTTON_TOP_LEFT] &&
+	   button_held[BUTTON_BOTTOM_RIGHT] && button_held[BUTTON_BOTTOM_LEFT]){
 		if(recovery_timeout == 0){
 			recovery_timeout = k_uptime_get() + 10000;
 		}
@@ -793,49 +1138,11 @@ void check_for_recovery_mode()
 
 int save_gif_to_file(const char *filename, const uint8_t* gif_data, size_t gif_size)
 {
-	struct fs_file_t file;
-	int rc;
-	LOG_HEXDUMP_INF(gif_data,gif_size,"GIF data to be written to file:");
-	fs_file_t_init(&file);
-
-	rc = fs_open(&file, filename, FS_O_CREATE | FS_O_WRITE);
-	if (rc < 0) {
-		LOG_ERR("Error opening file %s: %d", filename, rc);
-		return rc;
+	int rc = file_write_replace(filename, MEDIA_ROOT "/.ipixel.tmp", gif_data, gif_size);
+	if (rc == 0) {
+		LOG_INF("Saved GIF data to file %s", filename);
 	}
-	fs_seek(&file, 0 ,0);
-	rc = fs_write(&file, gif_data, gif_size);
-	if (rc < 0) {
-		LOG_ERR("Error writing to file %s: %d", filename, rc);
-		fs_close(&file);
-		return rc;
-	}
-	fs_close(&file);
-	LOG_INF("Saved GIF data to file %s", filename);
-	return 0;
-}
-
-int save_pixels_to_file(const char *filename)
-{
-	struct fs_file_t file;
-	int rc;
-
-	fs_file_t_init(&file);
-
-	rc = fs_open(&file, filename, FS_O_CREATE | FS_O_WRITE);
-	if (rc < 0) {
-		LOG_ERR("Error opening file %s: %d", filename, rc);
-		return rc;
-	}
-	rc = fs_write(&file, pixels_raw, sizeof(pixels_raw));
-	if (rc < 0) {
-		LOG_ERR("Error writing to file %s: %d", filename, rc);
-		fs_close(&file);
-		return rc;
-	}
-	fs_close(&file);
-	LOG_INF("Saved pixel data to file %s", filename);
-	return 0;
+	return rc;
 }
 
 int save_settings(){
@@ -867,31 +1174,6 @@ int save_settings(){
 	}
 	fs_close(&file);
 	last_saved_settings = global_settings;
-	return 0;
-}
-
-int load_gif(){
-
-	struct fs_file_t file;
-	int rc;
-
-	fs_file_t_init(&file);
-
-	rc = fs_open(&file, "/lfs1/default.gif", FS_O_READ);
-	if (rc < 0) {
-		LOG_ERR("Error opening default.gif: %d", rc);
-		return rc;
-	}
-	rc = fs_read(&file, gif_file_buffer, sizeof(gif_file_buffer));
-	if (rc < 0) {
-		LOG_ERR("Error reading from file default.gif: %d", rc);
-		fs_close(&file);
-		return rc;
-	}
-	gif_file_size = rc;
-	fs_close(&file);
-	LOG_INF("loaded GIF of size %d from disk",rc);
-	process_gif();
 	return 0;
 }
 
@@ -941,61 +1223,133 @@ void print_settings(){
 	LOG_INF("Brightness: %f",(double)global_settings.brightness);
 }
 
-int load_pixels_from_file(const char *filename)
+static void power_off_now(void)
 {
-	struct fs_file_t file;
-	int rc;
-
-	fs_file_t_init(&file);
-
-	rc = fs_open(&file, filename, FS_O_READ);
-	if (rc < 0) {
-		LOG_ERR("Error opening file %s: %d", filename, rc);
-		return rc;
+	LOG_INF("Shutting down now...");
+	for (int i = 0; i < ARRAY_SIZE(wakeup_buttons); i++) {
+		int rc = gpio_pin_configure_dt(&wakeup_buttons[i], GPIO_INPUT);
+		if (rc == 0) {
+			rc = gpio_pin_interrupt_configure_dt(&wakeup_buttons[i], GPIO_INT_LEVEL_ACTIVE);
+		}
+		if (rc < 0) {
+			LOG_ERR("Could not configure wakeup button %d (%d)", i, rc);
+		}
 	}
-	rc = fs_read(&file, pixels_raw, sizeof(pixels_raw));
+	lua_anim_stop();
+	int rc = fs_unmount(&littlefs_mnt);
 	if (rc < 0) {
-		LOG_ERR("Error reading from file %s: %d", filename, rc);
-		fs_close(&file);
-		return rc;
+		LOG_ERR("Error unmounting littlefs [%d]", rc);
 	}
-	fs_close(&file);
-	LOG_INF("Loaded pixel data from file %s", filename);
-	render();
-	return 0;
+	k_yield();
+	sys_poweroff();
 }
 
+// hold the top two buttons, then let go
 void check_power_off(){
-	if(shutdown_timeout != 0 && k_uptime_get() > shutdown_timeout) {
-		LOG_INF("Shutting down now...");
-		shutdown_timeout = 0;
-		int rc = gpio_pin_configure_dt(&wakeup_button, GPIO_INPUT);
-		if (rc < 0) {
-			printf("Could not configure wakeup button GPIO (%d)\n", rc);
-		}
-
-		rc = gpio_pin_interrupt_configure_dt(&wakeup_button, GPIO_INT_LEVEL_ACTIVE);
-		if (rc < 0) {
-			printf("Could not configure wakeup button GPIO interrupt (%d)\n", rc);
-		}
-		regulator_disable(led_en);
-		rc = fs_unmount(&littlefs_mnt);
-		if (rc < 0) {
-			LOG_ERR("Error unmounting littlefs [%d]", rc);
-		}
-		k_yield();
-		sys_poweroff();
+	static int64_t hold_until;
+	bool combo = button_held[BUTTON_TOP_RIGHT] && button_held[BUTTON_TOP_LEFT] &&
+		     !button_held[BUTTON_BOTTOM_RIGHT] && !button_held[BUTTON_BOTTOM_LEFT];
+	if (!combo || update_approval_waiting()) {
+		hold_until = 0;
+		return;
 	}
-	if(button2 && button3){
-		if(shutdown_timeout == 0){
-			shutdown_timeout = k_uptime_get() + 1000;
-		}
-		LOG_INF("Shutdown in %d seconds...", (int)((shutdown_timeout - k_uptime_get()) / 1000));
-	}else{
-		if(shutdown_timeout != 0){
-			LOG_INF("Button combo released, cancelling shutdown");
-		}
-		shutdown_timeout = 0;
+	if (hold_until == 0) {
+		hold_until = k_uptime_get() + POWER_OFF_HOLD_MS;
+		return;
+	}
+	if (k_uptime_get() < hold_until) {
+		return;
+	}
+	// dark at once, off once released: a held button would wake the badge right away
+	LOG_INF("Turning off once the buttons are released");
+	regulator_disable(led_en);
+	while (button_held[BUTTON_TOP_RIGHT] || button_held[BUTTON_TOP_LEFT]) {
+		k_sleep(K_MSEC(20));
+	}
+	k_sleep(K_MSEC(50));
+	power_off_now();
+}
+
+// hold the bottom two buttons to make the file that is showing the default
+void check_set_default(){
+	static int64_t hold_until;
+	static bool done;
+	bool combo = button_held[BUTTON_BOTTOM_RIGHT] && button_held[BUTTON_BOTTOM_LEFT] &&
+		     !button_held[BUTTON_TOP_RIGHT] && !button_held[BUTTON_TOP_LEFT];
+	if (!combo || update_approval_waiting()) {
+		hold_until = 0;
+		done = false;
+		return;
+	}
+	if (done) {
+		return;
+	}
+	if (hold_until == 0) {
+		hold_until = k_uptime_get() + SET_DEFAULT_HOLD_MS;
+	} else if (k_uptime_get() >= hold_until) {
+		done = true;
+		set_selection_as_default();
+	}
+}
+
+// firmware up to v0.6 kept the static picture as raw pixels in default.dat
+static void migrate_legacy_default(void)
+{
+	struct fs_dirent info;
+	struct fs_file_t file;
+	uint8_t raw[STRIP_NUM_PIXELS * 3];
+	struct led_rgb legacy[STRIP_NUM_PIXELS];
+
+	if (fs_stat(DEFAULT_PNG_PATH, &info) == 0 || fs_stat(LEGACY_DAT_PATH, &info) != 0) {
+		return;
+	}
+	memset(raw, 0, sizeof(raw));
+	fs_file_t_init(&file);
+	if (fs_open(&file, LEGACY_DAT_PATH, FS_O_READ) < 0) {
+		return;
+	}
+	ssize_t got = fs_read(&file, raw, sizeof(raw));
+	fs_close(&file);
+	if (got < 0) {
+		return;
+	}
+	for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
+		legacy[i] = (struct led_rgb){.r = raw[i * 3], .g = raw[i * 3 + 1], .b = raw[i * 3 + 2]};
+	}
+	if (pixels_to_png_file(legacy, STRIP_NUM_PIXELS, DEFAULT_PNG_PATH, MEDIA_ROOT "/.migrate.tmp") == 0) {
+		LOG_INF("Converted default.dat to default.png");
+		fs_unlink(LEGACY_DAT_PATH);
+	}
+}
+
+static void handle_requests(void)
+{
+	atomic_val_t r = atomic_clear(&requests);
+	if (r & REQUEST_PREVIEW_PLAY) {
+		play_preview();
+	}
+	if (r & REQUEST_PREVIEW_END) {
+		end_preview();
+	}
+	if (r & REQUEST_SAVE_DRAWING) {
+		pixels_to_png_file(pixels_raw, STRIP_NUM_PIXELS, DEFAULT_PNG_PATH, MEDIA_ROOT "/.draw.tmp");
+	}
+	if (r & REQUEST_RUN_SCRIPT) {
+		// started again even if it already runs: the web UI uploaded a new version
+		selected = atomic_get(&script_requested);
+		display_state_set(DISPLAY_LOADING_LUA);
+	}
+	if (r & REQUEST_NEXT_MODE) {
+		step_mode(1);
+	}
+	if (r & REQUEST_PREVIOUS_MODE) {
+		step_mode(-1);
+	}
+	if (r & REQUEST_NEXT) {
+		step_selection(1);
+	}
+	if (r & REQUEST_PREVIOUS) {
+		step_selection(-1);
 	}
 }
 
@@ -1013,9 +1367,15 @@ int main(void)
 		LOG_ERR("Error initializing stats system [%d]", rc);
 	}
 
+	// a blank partition is formatted by the mount
+	storage_format_if_requested(STORAGE_PARTITION_ID);
 	rc = fs_mount(&littlefs_mnt);
 	if (rc < 0) {
 		LOG_ERR("Error mounting littlefs [%d]", rc);
+	}
+	storage_ok = rc == 0;
+	if (storage_ok) {
+		migrate_legacy_default();
 	}
 
 	if(load_settings() != 0){
@@ -1026,12 +1386,14 @@ int main(void)
 
 	if (!device_is_ready(strip)) {
 		LOG_ERR("LED strip device %s is not ready", strip->name);
+		update_trial_failed();
 		return 0;
 	}
 
 	err = bt_enable(NULL);
 	if (err) {
 		LOG_INF("Bluetooth init failed (err %d)\n", err);
+		update_trial_failed();
 		return 0;
 	}
 
@@ -1064,6 +1426,8 @@ int main(void)
 
 	STATS_SET(smp_svr_stats, version_major, FW_VERSION_MAJOR);
 	STATS_SET(smp_svr_stats, version_minor, FW_VERSION_MINOR);
+	// tells update tools that uploads wait for button presses
+	STATS_SET(smp_svr_stats, upload_approval, 1);
 
 
 	k_work_init(&adv_work, adv_work_handler);
@@ -1073,23 +1437,44 @@ int main(void)
 	// we don't want to wear out flash too much by constant small writes
 	k_timer_start(&save_settings_timer, K_SECONDS(5), K_SECONDS(5));
 	
-	if (boot_is_img_confirmed() == 0) {
-        LOG_WRN("Boot image not confirmed. Confirming now.");
-        boot_write_img_confirmed();
-    }
-	
+	bool prompting = false;
+
 	for (;;) {
 
 		// STATS_INC(smp_svr_stats, ticks);
-		display_state_process();
-		if(display_state == DISPLAY_GIF) {
-			playback_animation(&current_animation);
+		if(update_approval_waiting()) {
+			prompting = true;
+			display_upload_prompt();
+			k_sleep(K_MSEC(20));
 		}else{
-			k_sleep(K_MSEC(50));
+			if(prompting) {
+				prompting = false;
+				render();
+			}
+			handle_requests();
+			display_state_process();
+			if(current_kind() != MEDIA_LUA) {
+				// left Lua mode, through a button, an upload, live drawing or a preview
+				lua_anim_stop();
+			}
+			if(display_state == DISPLAY_GIF) {
+				playback_animation(&current_animation);
+				// until the next frame, but short enough to stay responsive
+				k_sleep(K_MSEC(CLAMP(gif_next_frame_at - k_uptime_get(), 1, 20)));
+			}else if(display_state == DISPLAY_LUA) {
+				if(lua_anim_frame(pixels_raw, STRIP_NUM_PIXELS)) {
+					render();
+				}
+				k_sleep(K_MSEC(5));
+			}else{
+				k_sleep(K_MSEC(50));
+			}
 		}
 		k_sem_take(&sync, K_MSEC(1));
 		check_for_recovery_mode();
 		check_power_off();
+		check_set_default();
+		update_trial_poll(storage_ok && bluetooth_ok);
 		
 	}
 }

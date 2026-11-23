@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+/* Largest canvas accepted, the size of the display the badge poses as. */
+#define GD_MAX_PIXELS (32 * 16)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,7 +25,10 @@ typedef struct gd_GCE {
 } gd_GCE;
 
 typedef struct gd_GIF {
-    int fd;
+    int fd;                 /* -1 when reading from memory */
+    const uint8_t *mem;
+    size_t mem_len;
+    off_t mem_pos;
     off_t anim_start;
     uint16_t width, height;
     uint16_t depth;
@@ -43,6 +49,7 @@ typedef struct gd_GIF {
 } gd_GIF;
 
 gd_GIF *gd_open_gif(const char *fname);
+gd_GIF *gd_open_gif_memory(const uint8_t *data, size_t len);
 int gd_get_frame(gd_GIF *gif);
 void gd_render_frame(gd_GIF *gif, uint8_t *buffer);
 int gd_is_bgcolor(gd_GIF *gif, uint8_t color[3]);

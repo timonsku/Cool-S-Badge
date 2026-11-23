@@ -20,8 +20,10 @@ OTA Firmware Update Instructions
 - Click on the "Start" button to start the firmware update.
 ![picture of start button](4.png)
 
-- A popup will ask what type of update to run. Select the recommended "Confirm only" option. If you misclicked don't worry, it will likely still apply the update correctly. If not just start over.
+- A popup will ask what type of update to run. Select "Test and Confirm", not the "Confirm only" option that the app recommends and the arrow in the picture points at. Only with "Test and Confirm" can the badge return to its previous firmware if the new one does not work.
 ![picture of update type selection](5.png)
+
+- On firmware newer than v0.6 the badge now breathes yellow. Press each of its four buttons twice within 30 seconds to allow the update. If you are too late, or the app reports "access denied", press Start again. If the app says "Upload complete" immediately and then times out while the badge is yellow, press the buttons and then Start again.
 
 - Wait for the update to complete. This may take up to a minute. It should show the "Uploading" message and then start a progress bar after a few seconds. If it immediately says "Upload complete" then you already have the latest firmware installed.
 ![picture of update starting](6.png)

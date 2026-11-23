@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'self'">
+  <meta name="description" content="Manage media and update the firmware of a Cool-S badge over Bluetooth.">
+  <title>Cool-S Badge</title>
+  <link rel="icon" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="favicon.svg" alt="" width="52" height="52">
+      <h1>Cool-S Badge</h1>
+    </div>
+    <div id="connection" class="connection">
+      <span class="led" aria-hidden="true"></span>
+      <span id="connection-label" aria-live="polite">Not connected</span>
+      <button id="connect" type="button" class="primary" disabled>Connect</button>
+    </div>
+  </header>
+
+  <main>
+    <p id="browser-warning" class="banner" hidden></p>
+    <noscript><p class="banner">This page needs JavaScript.</p></noscript>
+
+    <div id="main-tabs" class="tabs" role="tablist" aria-label="Sections">
+      <button id="tab-media" type="button" role="tab" aria-selected="true" aria-controls="panel-media">Media</button>
+      <button id="tab-draw" type="button" role="tab" aria-selected="false" aria-controls="panel-draw" tabindex="-1">Draw</button>
+      <button id="tab-code" type="button" role="tab" aria-selected="false" aria-controls="panel-code" tabindex="-1">Code</button>
+      <button id="tab-firmware" type="button" role="tab" aria-selected="false" aria-controls="panel-firmware" tabindex="-1">Firmware Update</button>
+    </div>
+
+    <section id="panel-media" class="board" role="tabpanel" aria-labelledby="tab-media">
+      <div id="media-unsupported" class="banner" hidden>
+        The firmware on this badge cannot manage media yet.
+        <button id="go-firmware" type="button" class="link">Update the firmware</button> to use this tab.
+      </div>
+
+      <div class="storage">
+        <div class="storage-heading">
+          <h2>Storage</h2>
+          <strong id="storage-free">–</strong>
+        </div>
+        <div id="storage-meter" class="meter" role="progressbar" aria-label="Storage used" aria-valuemin="0" aria-valuemax="100"></div>
+        <p id="storage-detail" class="hint"></p>
+        <div class="backup">
+          <button id="backup-download" type="button" disabled>Download backup</button>
+          <button id="backup-restore" type="button" disabled>Restore backup…</button>
+          <input id="backup-input" type="file" accept=".zip,application/zip" hidden>
+          <button id="storage-erase" type="button" class="danger" disabled>Erase storage…</button>
+          <span class="hint">Every file on the badge, settings included, as one .zip to restore after it was erased.</span>
+        </div>
+        <div id="backup-progress" class="progress" hidden>
+          <span id="backup-label"></span>
+          <progress id="backup-bar" max="1" value="0" aria-labelledby="backup-label"></progress>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div id="media-tabs" class="subtabs" role="tablist" aria-label="Media type">
+          <button id="tab-gif" type="button" role="tab" aria-selected="true" aria-controls="panel-folder" data-dir="gif">GIF</button>
+          <button id="tab-png" type="button" role="tab" aria-selected="false" aria-controls="panel-folder" data-dir="png" tabindex="-1">PNG</button>
+          <button id="tab-lua" type="button" role="tab" aria-selected="false" aria-controls="panel-folder" data-dir="lua" tabindex="-1">Lua</button>
+        </div>
+        <label class="switch">
+          <input id="preview-toggle" type="checkbox" role="switch" autocomplete="off">
+          <span>Show previews</span>
+        </label>
+        <button id="refresh" type="button" disabled>Refresh</button>
+      </div>
+
+      <div id="panel-folder" role="tabpanel" aria-labelledby="tab-gif">
+        <label id="dropzone" class="dropzone disabled">
+          <input id="file-input" type="file" multiple disabled>
+          <span id="drop-text"></span>
+          <small>Saved in <code id="folder-path">/gif</code> on the badge</small>
+        </label>
+
+        <div id="lua-help" class="banner info" hidden>
+          Lua scripts draw LED animations on the badge. Define <code>frame(t)</code> and set LEDs with
+          <code>led.set(i, hsv(i / led.count + t))</code>; the badge shows each frame.
+          See the <a href="https://github.com/timonsku/Cool-S-Badge/blob/main/docs/LUA.md" target="_blank" rel="noopener noreferrer">script reference</a>
+          and the <a href="https://github.com/timonsku/Cool-S-Badge/tree/main/web/examples" target="_blank" rel="noopener noreferrer">examples</a>.
+          A script that fails shows every other LED red.
+        </div>
+
+        <div id="upload-progress" class="progress" hidden>
+          <span id="upload-label"></span>
+          <progress id="upload-bar" max="1" value="0" aria-labelledby="upload-label"></progress>
+        </div>
+
+        <ul id="files" class="files"></ul>
+        <p id="files-empty" class="empty"></p>
+      </div>
+    </section>
+
+    <section id="panel-draw" class="board" role="tabpanel" aria-labelledby="tab-draw" hidden>
+      <div class="studio">
+        <div id="draw-stage" class="stage">
+          <canvas id="draw-glow" aria-hidden="true"></canvas>
+          <svg id="draw-leds" role="group" aria-label="Badge LEDs, top first along the strip" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+
+        <div class="studio-tools">
+          <label class="switch live-switch">
+            <input id="draw-live" type="checkbox" role="switch" autocomplete="off" disabled aria-describedby="draw-live-hint">
+            <span>Live preview on badge</span>
+          </label>
+          <p id="draw-live-hint" class="hint"></p>
+
+          <h2>Color</h2>
+          <div class="picker">
+            <input id="draw-color" type="color" aria-label="Paint color" autocomplete="off">
+            <div id="draw-swatches" class="swatches" role="group" aria-label="Preset colors"></div>
+          </div>
+          <p class="hint">Touch an LED, or drag across several, to paint them. Off switches an LED off. Alt-click an LED to pick up its color.</p>
+          <div class="row">
+            <button id="draw-fill" type="button">Fill all</button>
+            <button id="draw-clear" type="button">Clear</button>
+            <button id="draw-undo" type="button" aria-keyshortcuts="Control+Z">Undo</button>
+            <button id="draw-redo" type="button" aria-keyshortcuts="Control+Y">Redo</button>
+          </div>
+
+          <div class="frames-heading">
+            <h2>Frames</h2>
+            <span id="draw-frames-count" class="hint"></span>
+          </div>
+          <ol id="draw-frames" class="frames" aria-label="Frames"></ol>
+          <div class="row">
+            <button id="frame-add" type="button">New</button>
+            <button id="frame-copy" type="button">Duplicate</button>
+            <button id="frame-earlier" type="button" aria-label="Move frame earlier">&larr;</button>
+            <button id="frame-later" type="button" aria-label="Move frame later">&rarr;</button>
+            <button id="frame-delete" type="button" class="danger">Delete</button>
+          </div>
+          <div class="row">
+            <label class="field">Frame time
+              <input id="draw-delay" type="number" min="20" max="10000" step="10" inputmode="numeric" autocomplete="off">
+              ms
+            </label>
+            <button id="draw-play" type="button">Play</button>
+          </div>
+
+          <h2>Save</h2>
+          <label class="field">Name
+            <input id="draw-name" type="text" maxlength="27" spellcheck="false" autocomplete="off">
+          </label>
+          <p id="draw-format" class="hint"></p>
+          <div class="row">
+            <button id="draw-upload" type="button" class="primary" disabled>Upload to badge</button>
+            <button id="draw-download" type="button">Download</button>
+          </div>
+          <div id="draw-progress" class="progress" hidden>
+            <span id="draw-progress-label"></span>
+            <progress id="draw-progress-bar" max="1" value="0" aria-labelledby="draw-progress-label"></progress>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-code" class="board" role="tabpanel" aria-labelledby="tab-code" hidden>
+      <div class="code-toolbar">
+        <select id="code-open" aria-label="Open a script"></select>
+        <input id="code-file" type="file" accept=".lua,text/plain" hidden>
+        <label class="field">Name
+          <input id="code-name" type="text" maxlength="28" spellcheck="false" autocomplete="off">
+        </label>
+        <span id="code-size" class="hint"></span>
+        <a class="hint" href="https://github.com/timonsku/Cool-S-Badge/blob/main/docs/LUA.md" target="_blank" rel="noopener noreferrer">Script reference</a>
+      </div>
+
+      <div class="editor">
+        <div class="editor-gutter" aria-hidden="true"><div id="code-gutter"></div></div>
+        <div class="editor-body">
+          <pre id="code-highlight" aria-hidden="true"></pre>
+          <textarea id="code-text" wrap="off" spellcheck="false" autocomplete="off" autocapitalize="off"
+                    aria-label="Lua script" aria-keyshortcuts="Control+S"></textarea>
+        </div>
+      </div>
+
+      <p id="code-status" class="status" role="status"></p>
+      <div class="row">
+        <button id="code-run" type="button" class="primary" disabled title="Ctrl+S">Upload and run</button>
+        <button id="code-upload" type="button" disabled>Upload only</button>
+        <button id="code-download" type="button">Download .lua</button>
+        <span id="code-filename" class="hint"></span>
+      </div>
+      <div id="code-progress" class="progress" hidden>
+        <span id="code-progress-label"></span>
+        <progress id="code-progress-bar" max="1" value="0" aria-labelledby="code-progress-label"></progress>
+      </div>
+    </section>
+
+    <section id="panel-firmware" class="board" role="tabpanel" aria-labelledby="tab-firmware" hidden>
+      <h2>On the badge</h2>
+      <dl class="details">
+        <dt>Version</dt><dd id="fw-version">–</dd>
+        <dt>Image</dt><dd id="fw-hash" class="mono">–</dd>
+        <dt>State</dt><dd id="fw-state">–</dd>
+      </dl>
+
+      <h2>New firmware</h2>
+      <p class="hint">
+        Download the newest <code>firmware_*.zip</code> from the
+        <a href="https://github.com/timonsku/Cool-S-Badge" target="_blank" rel="noopener noreferrer">root of the repository</a>,
+        then select it here.
+        Newer firmware asks you to press each of the badge's four buttons twice before it accepts an update.
+      </p>
+      <label id="firmware-drop" class="dropzone">
+        <input id="firmware-input" type="file" accept=".zip,.bin">
+        <span>Drop the firmware here, or click to choose</span>
+        <small>Update package (.zip) or signed image (.bin)</small>
+      </label>
+      <p id="firmware-error" class="banner error" role="alert" hidden></p>
+      <dl id="firmware-summary" class="details" hidden>
+        <dt>File</dt><dd id="file-fw-name"></dd>
+        <dt>Size</dt><dd id="file-fw-size"></dd>
+        <dt>Image</dt><dd id="file-fw-hash" class="mono"></dd>
+      </dl>
+      <p id="firmware-installed" class="status success" hidden>The badge is already running this firmware.</p>
+
+      <button id="install" type="button" class="primary" disabled>Update firmware</button>
+      <div class="progress">
+        <p id="update-status" class="status" role="status"></p>
+        <progress id="update-bar" max="1" aria-label="Update progress" hidden></progress>
+      </div>
+    </section>
+
+    <p class="footnote">
+      The badge accepts one connection at a time, so close the iPixel and Device Manager apps before connecting.
+      Files stay between this browser and the badge.
+    </p>
+  </main>
+
+  <div id="notes" class="notes" aria-live="polite"></div>
+
+  <dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button value="cancel" autofocus>Cancel</button>
+        <button id="confirm-action" class="primary" value="ok">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="erase-dialog" aria-labelledby="erase-title" aria-describedby="erase-message">
+    <form method="dialog">
+      <h2 id="erase-title">Erase the badge's storage?</h2>
+      <p id="erase-message">
+        Every GIF, PNG and script, the default images and the settings are deleted, and the storage is
+        formatted as on a new badge. The badge restarts to do this. Save a backup first to restore
+        any of it later.
+      </p>
+      <div class="dialog-actions">
+        <button value="cancel">Cancel</button>
+        <button value="erase" class="danger">Erase without backup</button>
+        <button value="backup" class="primary" autofocus>Back up, then erase</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
