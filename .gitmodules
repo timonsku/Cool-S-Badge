@@ -1,0 +1,3 @@
+[submodule "cool-s-firmware/modules/lua_zephyr"]
+	path = cool-s-firmware/modules/lua_zephyr
+	url = https://github.com/zano-systems/lua_zephyr
