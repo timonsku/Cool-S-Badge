@@ -1,0 +1,120 @@
+# Builds the firmware for every commit and pull request. Each run keeps merged.hex (for SWD)
+# and dfu_application.zip (for the web UI and Bluetooth updates) as an artifact.
+# Publishing a GitHub release whose tag matches the firmware version (v0.7 for
+# VERSION_MAJOR = 0, VERSION_MINOR = 7 in cool-s-firmware/VERSION) attaches both files to it.
+name: Firmware
+
+on:
+  push:
+    # tags are built by the release event instead
+    branches: ['**']
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NCS_VERSION: v3.1.1
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container:
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.1.1
+    defaults:
+      run:
+        # the toolchain environment is only set up in bash sessions
+        shell: bash
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact: ${{ steps.version.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: app
+          submodules: recursive
+
+      - name: Read the firmware version
+        id: version
+        run: |
+          file=app/cool-s-firmware/VERSION
+          # the badge reports only these two, as major.minor
+          major=$(sed -n 's/^VERSION_MAJOR[[:space:]]*=[[:space:]]*\([0-9]\+\).*/\1/p' "$file")
+          minor=$(sed -n 's/^VERSION_MINOR[[:space:]]*=[[:space:]]*\([0-9]\+\).*/\1/p' "$file")
+          if [ -z "$major" ] || [ -z "$minor" ]; then
+            echo "::error file=cool-s-firmware/VERSION::VERSION_MAJOR or VERSION_MINOR not found"
+            exit 1
+          fi
+          version="$major.$minor"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "artifact=cool-s-firmware-v$version-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = release ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Release tag $GITHUB_REF_NAME does not match the firmware version v$version in cool-s-firmware/VERSION." \
+              "The web UI compares these, so a mismatch would offer the update forever."
+            exit 1
+          fi
+
+      - name: Restore the nRF Connect SDK
+        id: ncs-cache
+        uses: actions/cache@v6
+        with:
+          path: ncs
+          key: ncs-${{ env.NCS_VERSION }}-1
+
+      - name: Fetch the nRF Connect SDK
+        if: steps.ncs-cache.outputs.cache-hit != 'true'
+        run: |
+          west init -m https://github.com/nrfconnect/sdk-nrf --mr "$NCS_VERSION" ncs
+          cd ncs
+          west update --narrow --fetch-opt=--depth=1
+
+      - name: Build
+        working-directory: ncs
+        run: |
+          west build --sysbuild --pristine always -b cool_s/nrf52840 -d ../build ../app/cool-s-firmware -- \
+            -DDTC_OVERLAY_FILE=boards/cool-s.overlay \
+            -DEXTRA_DTC_OVERLAY_FILE=app.overlay
+
+      - name: Collect the output
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir out
+          cp build/merged.hex build/dfu_application.zip out/
+          date=$(git -C app log -1 --format=%cI)
+          python3 - "$VERSION" "$GITHUB_SHA" "$date" > out/version.json <<'EOF'
+          import json, sys
+          version, commit, date = sys.argv[1:]
+          print(json.dumps({"version": version, "commit": commit, "date": date}))
+          EOF
+          ls -l out
+          cat out/version.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.version.outputs.artifact }}
+          path: out/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: out
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: cool-s-firmware-v${{ needs.build.outputs.version }}
+        run: |
+          cp out/dfu_application.zip "$NAME-dfu.zip"
+          cp out/merged.hex "$NAME-merged.hex"
+          gh release upload "$GITHUB_REF_NAME" "$NAME-dfu.zip" "$NAME-merged.hex" --clobber -R "$GITHUB_REPOSITORY"

@@ -211,6 +211,10 @@ progress { display: block; width: 100%; height: 16px; accent-color: var(--led); 
 }
 .banner.error { border-color: var(--bad); background: #fde8e6; }
 .banner.info { border-color: var(--led); background: #e0f4fd; }
+.banner p { margin: 0; }
+.banner .row { margin-bottom: 0; }
+.dev-build { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--muted); }
+.dev-build h3 { margin: 0; font-size: 15px; color: var(--muted); }
 .status.success { color: var(--good); }
 .status.error { color: var(--bad); }
 .status.waiting {

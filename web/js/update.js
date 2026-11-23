@@ -1,5 +1,5 @@
 import { app } from './app.js';
-import { $, notify, confirmDialog } from './dom.js';
+import { $, el, notify, confirmDialog } from './dom.js';
 import { readFirmware, toHex } from './firmware-file.js';
 import { formatBytes } from './formats.js';
 
@@ -22,6 +22,10 @@ let selection = 0;
 let expected = null;
 let updating = null;
 let afterReconnect;
+// firmware/manifest.json, published with the site: the newest build of main and the latest release
+let manifest = null;
+let downloading = false;
+let announced = '';
 
 const hexHash = (image) => (image?.hash ? toHex(image.hash) : '');
 const activeImage = () => app.images.find((image) => image.active);
@@ -39,7 +43,54 @@ function setStatus(text, { kind = '', progress } = {}) {
   else if (progress !== undefined) bar.value = progress;
 }
 
+// '0.10' is newer than '0.9'
+function compareVersions(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff) return Math.sign(diff);
+  }
+  return 0;
+}
+
+const formatDate = (iso) => new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' });
+
+function updateRemote() {
+  const release = manifest?.release;
+  const offer = Boolean(app.ready && release && app.version !== release.version);
+  const newer = offer && (!app.version || compareVersions(release.version, app.version) > 0);
+  $('#fw-upgrade').hidden = !offer;
+  if (offer) {
+    const running = app.version ? `This badge runs v${app.version}.` : 'This badge runs older firmware.';
+    $('#fw-upgrade-text').textContent = newer
+      ? `Firmware v${release.version} is available, released ${formatDate(release.date)}. ${running}`
+      : `The latest release is v${release.version}. ${running}`;
+    $('#fw-upgrade-install').textContent = newer ? `Upgrade to v${release.version}` : `Install v${release.version}`;
+    $('#fw-upgrade-notes').href = release.url;
+  }
+  $('#fw-upgrade-install').disabled = !app.ready || app.busy || downloading;
+
+  // once per badge and version, as an update reconnects several times
+  const key = newer ? `${app.smp.device?.id}:${app.version}` : '';
+  if (key && key !== announced) notify(`Firmware v${release.version} is available in the Firmware Update tab.`);
+  if (app.ready) announced = key;
+
+  const latest = manifest?.latest;
+  $('#fw-dev').hidden = !latest;
+  if (latest) {
+    const link = el('a', { href: latest.url, target: '_blank', rel: 'noopener noreferrer', className: 'mono' },
+      latest.commit.slice(0, 7));
+    $('#fw-dev-text').replaceChildren(
+      'The newest build of the main branch, commit ', link,
+      ` from ${formatDate(latest.date)}, reports itself as v${latest.version}.`,
+    );
+  }
+  $('#fw-dev-install').disabled = !app.ready || app.busy || downloading;
+}
+
 function update() {
+  updateRemote();
   const active = app.ready ? activeImage() : null;
   $('#fw-version').textContent = app.ready ? (app.version ? `v${app.version}` : 'Unknown') : '–';
   $('#fw-hash').textContent = active ? hexHash(active).slice(0, 16) : '–';
@@ -47,8 +98,17 @@ function update() {
 
   const installed = Boolean(selected && active && hexHash(active) === toHex(selected.hash));
   $('#firmware-installed').hidden = !installed;
-  $('#firmware-input').disabled = app.busy;
-  $('#install').disabled = !app.ready || app.busy || !selected || installed;
+  $('#firmware-input').disabled = app.busy || downloading;
+  $('#install').disabled = !app.ready || app.busy || downloading || !selected || installed;
+}
+
+function showSelected(firmware) {
+  selected = firmware;
+  $('#file-fw-name').textContent = firmware.fileName;
+  $('#file-fw-size').textContent = formatBytes(firmware.data.length);
+  $('#file-fw-hash').textContent = toHex(firmware.hash).slice(0, 16);
+  $('#firmware-summary').hidden = false;
+  $('#firmware-error').hidden = true;
 }
 
 async function selectFile(file) {
@@ -63,11 +123,7 @@ async function selectFile(file) {
   try {
     const firmware = await readFirmware(file);
     if (id !== selection) return;
-    selected = firmware;
-    $('#file-fw-name').textContent = firmware.fileName;
-    $('#file-fw-size').textContent = formatBytes(firmware.data.length);
-    $('#file-fw-hash').textContent = toHex(firmware.hash).slice(0, 16);
-    $('#firmware-summary').hidden = false;
+    showSelected(firmware);
   } catch (error) {
     if (id !== selection) return;
     $('#firmware-error').textContent = error.message;
@@ -76,13 +132,10 @@ async function selectFile(file) {
   update();
 }
 
-async function install() {
-  const firmware = selected;
-  const confirmed = await confirmDialog(
-    'Update the firmware?',
-    'This takes a few minutes. Keep the badge powered and nearby, and keep this page open.',
-    'Update',
-  );
+const KEEP_NEARBY = 'This takes a few minutes. Keep the badge powered and nearby, and keep this page open.';
+
+async function install(firmware, title = 'Update the firmware?', message = KEEP_NEARBY) {
+  const confirmed = await confirmDialog(title, message, 'Update');
   if (!confirmed) return;
 
   await app.run(async () => {
@@ -229,6 +282,47 @@ async function waitUntilConfirmed(text, signal) {
   return false;
 }
 
+// Downloads a package published with the site, then installs it like a selected file.
+async function installPublished(entry, title, message) {
+  if (!entry) return;
+  ++selection;
+  downloading = true;
+  update();
+  let firmware;
+  try {
+    setStatus('Downloading the firmware…', { progress: null });
+    const response = await fetch(entry.file, { cache: 'no-cache' });
+    if (!response.ok) throw new Error(`The download failed (HTTP ${response.status}).`);
+    const name = entry.file.split('/').pop();
+    firmware = await readFirmware(new File([await response.blob()], name));
+    setStatus('');
+  } catch (error) {
+    setStatus(`Could not get the firmware: ${error.message}`, { kind: 'error' });
+    return;
+  } finally {
+    downloading = false;
+    update();
+  }
+
+  showSelected(firmware);
+  update();
+  const active = activeImage();
+  if (active && hexHash(active) === toHex(firmware.hash)) return;
+  await install(firmware, title, message);
+}
+
+async function loadManifest() {
+  try {
+    const response = await fetch('firmware/manifest.json', { cache: 'no-cache' });
+    if (!response.ok) return;
+    manifest = await response.json();
+  } catch {
+    // opened locally or offline: only files can be installed
+    return;
+  }
+  update();
+}
+
 export async function loadFirmwareState() {
   app.images = await app.badge.images();
   Object.assign(app, await app.badge.firmwareInfo());
@@ -287,7 +381,20 @@ export function setupUpdate(onReconnect) {
     if (!input.disabled) selectFile(event.dataTransfer.files[0]);
   });
 
-  $('#install').addEventListener('click', install);
+  $('#install').addEventListener('click', () => install(selected));
+  $('#fw-upgrade-install').addEventListener('click', () => {
+    const { release } = manifest;
+    installPublished(release, `Install firmware v${release.version}?`, KEEP_NEARBY);
+  });
+  $('#fw-dev-install').addEventListener('click', () => {
+    const { latest } = manifest;
+    installPublished(
+      latest,
+      'Flash the latest commit?',
+      `This installs commit ${latest.commit.slice(0, 7)}, a development build that has not been tested like a release. ${KEEP_NEARBY}`,
+    );
+  });
   app.addEventListener('change', update);
   update();
+  loadManifest();
 }

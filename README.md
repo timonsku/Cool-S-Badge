@@ -1,13 +1,10 @@
 # Cool-S-Badge
 
-Targets nRF Connect 3.1.1
-
 For Assembly check the docs folder.
 TRIPPLE CHECK THE PRO MICRO ORIENTATION before soldering in place
 
-Always update the firmware with the latest version committed to the root of the repo.
+Always update the firmware to the latest [release](https://github.com/timonsku/Cool-S-Badge/releases). The web UI offers the upgrade by itself when a connected badge runs a different version.
 
-To build the firmware, fetch the Lua module first: `git submodule update --init --recursive`
 
 Web UI
 ----------------
@@ -18,17 +15,17 @@ The Media tab needs firmware v0.7+.
 The badge shows uploaded files with its buttons, see "Buttons" below. It needs firmware newer than v0.6 for that.
 The LEDs show the first 30 pixels of an image, row by row. PNGs over 1024 pixels or 16 KB are not shown.
 
-"Download backup" saves every file on the badge as a .zip laid out as on its storage: `settings.json`, `default.gif`, `default.png`, `default.lua`, `gif/`, `png/`, `lua/` and anything else there is (hidden temporary files are left out). "Restore backup" writes such a .zip back, for example after the storage was erased. Files on the badge with other names are kept.
-
-A zip of the unpacked backup folder, made with the operating system's own tools, also restores. Restart the badge afterwards to load restored settings. Firmware older than v0.7 can only back up and restore the files named above in the root and in the `gif` and `png` folders.
-
-"Erase storage" formats the whole storage, settings included, as on a new badge. It offers to save a backup first. The badge restarts, erases the storage while starting and comes back with default settings. Needs firmware v0.7+, and is refused while a firmware update is still on trial.
-
 The Draw tab paints pictures and animations on a model of the badge. One frame uploads as a 30×1 PNG, more frames as a 30×1 GIF. The drawing is kept in the browser between visits.
 
 With "Live preview on badge", the badge shows the frame being drawn, and Play sends the animation to the badge, which plays it from RAM (up to 16 KB, about 300 frames) without saving anything. Only "Upload" writes to flash. Playing animations on the badge needs firmware v0.7+.
 
 The Code tab is an editor for LED animation scripts in Lua, see "Lua scripts" below: open an example, a script from the badge or a file, then "Upload and run" (Ctrl+S) shows it on the badge and points at the line of any error. The Media tab's Lua folder lists the scripts on the badge, with Edit to open one in the editor. Needs firmware v0.7+.
+
+"Download backup" saves every file on the badge as a .zip laid out as on its storage: `settings.json`, `default.gif`, `default.png`, `default.lua`, `gif/`, `png/`, `lua/` and anything else there is (hidden temporary files are left out). "Restore backup" writes such a .zip back, for example after the storage was erased. Files on the badge with other names are kept.
+
+A zip of the unpacked backup folder, made with the operating system's own tools, also restores. Restart the badge afterwards to load restored settings. Firmware older than v0.7 can only back up and restore the files named above in the root and in the `gif` and `png` folders.
+
+"Erase storage" formats the whole storage, settings included, as on a new badge. It offers to save a backup first. The badge restarts, erases the storage while starting and comes back with default settings. Needs firmware v0.7+, and is refused while a firmware update is still on trial.
 
 To run it locally: `python -m http.server -d web 8000` and open http://localhost:8000
 
@@ -58,11 +55,12 @@ Applies to firmware newer than v0.6.
 
 OTA Firmware Update
 ----------------
-Download Nordic Device Manager and select the zip file in the DFU/Image tab.
+Use the Firmware tab in the WebUI for updating you firmware.
+Alternatively download Nordic Device Manager and select the zip file in the DFU/Image tab.
 Takes about 30sec after upload before it comes back online.
 https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-Device-Manager
 
-Step by step instructions can be found in [OTA.md](docs/OTA/OTA.md)
+Step by step instructions for flashing with Device Manager can be found in [OTA.md](docs/OTA/OTA.md)
 
 How to set colors
 ----------------
@@ -93,3 +91,12 @@ Applies to firmware newer than v0.6.
 - Hold the bottom two for 3 seconds: the file that is showing becomes the new default. The LEDs flash white to confirm.
 - Hold all four for 10 seconds: restart into USB recovery.
 - Live drawings from the iPixel app are saved as default.png. Older firmware kept them in default.dat; the first start on the new firmware converts that file.
+
+Development
+-----------------
+Targets nRF Connect 3.1.1
+
+To build the firmware, fetch the Lua module first: `git submodule update --init --recursive`
+
+GitHub Actions builds the firmware for every commit. Each run's artifact holds `merged.hex` (SWD) and `dfu_application.zip` (Bluetooth/web UI update).
+To release, bump `VERSION_MAJOR`/`VERSION_MINOR` in `cool-s-firmware/VERSION`, then publish a GitHub release tagged with that version, e.g. `v0.7`. The build attaches `cool-s-firmware-v0.7-dfu.zip` and `-merged.hex` to it and the web UI then offers it. A tag that does not match the version fails the build.

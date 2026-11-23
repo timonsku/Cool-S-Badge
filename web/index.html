@@ -204,10 +204,18 @@
         <dt>State</dt><dd id="fw-state">–</dd>
       </dl>
 
+      <div id="fw-upgrade" class="banner info" hidden>
+        <p id="fw-upgrade-text"></p>
+        <div class="row">
+          <button id="fw-upgrade-install" type="button" class="primary"></button>
+          <a id="fw-upgrade-notes" href="https://github.com/timonsku/Cool-S-Badge/releases" target="_blank" rel="noopener noreferrer">Release notes</a>
+        </div>
+      </div>
+
       <h2>New firmware</h2>
       <p class="hint">
-        Download the newest <code>firmware_*.zip</code> from the
-        <a href="https://github.com/timonsku/Cool-S-Badge" target="_blank" rel="noopener noreferrer">root of the repository</a>,
+        Download a <code>*-dfu.zip</code> from the
+        <a href="https://github.com/timonsku/Cool-S-Badge/releases" target="_blank" rel="noopener noreferrer">releases</a>,
         then select it here.
         Newer firmware asks you to press each of the badge's four buttons twice before it accepts an update.
       </p>
@@ -228,6 +236,15 @@
       <div class="progress">
         <p id="update-status" class="status" role="status"></p>
         <progress id="update-bar" max="1" aria-label="Update progress" hidden></progress>
+      </div>
+
+      <div id="fw-dev" class="dev-build" hidden>
+        <h3>Development build</h3>
+        <p class="hint">
+          <span id="fw-dev-text"></span>
+          It has not been tested like a release. If it fails to start, the badge returns to its current firmware.
+        </p>
+        <button id="fw-dev-install" type="button">Flash latest commit</button>
       </div>
     </section>
 

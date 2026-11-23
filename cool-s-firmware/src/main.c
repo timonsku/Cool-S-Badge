@@ -11,6 +11,7 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/kernel.h>
+#include <zephyr/app_version.h>
 #include <zephyr/drivers/gpio.h>
 #include <soc.h>
 #include <stdlib.h>
@@ -82,9 +83,6 @@ static const struct json_obj_descr settings_descr[] = {
 
 #define STORAGE_PARTITION_LABEL	storage_partition
 #define STORAGE_PARTITION_ID	FIXED_PARTITION_ID(STORAGE_PARTITION_LABEL)
-
-#define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 7
 
 /* Define an example stats group; approximates seconds since boot. */
 STATS_SECT_START(smp_svr_stats)
@@ -1424,8 +1422,8 @@ int main(void)
 	memcpy(&updated_name, &device_name, sizeof(device_name));
 	bt_set_name((const char *)updated_name);
 
-	STATS_SET(smp_svr_stats, version_major, FW_VERSION_MAJOR);
-	STATS_SET(smp_svr_stats, version_minor, FW_VERSION_MINOR);
+	STATS_SET(smp_svr_stats, version_major, APP_VERSION_MAJOR);
+	STATS_SET(smp_svr_stats, version_minor, APP_VERSION_MINOR);
 	// tells update tools that uploads wait for button presses
 	STATS_SET(smp_svr_stats, upload_approval, 1);
 

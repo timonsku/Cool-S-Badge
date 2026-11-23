@@ -1,14 +1,19 @@
-# Publishes web/ as-is. Needs Settings > Pages > Source set to "GitHub Actions" once.
+# Publishes web/ together with the firmware the web UI offers: the newest successful build of
+# main and the latest release, both served from the site itself, since release downloads and
+# Actions artifacts cannot be fetched by a page on another origin.
+# Needs Settings > Pages > Source set to "GitHub Actions" once.
 name: Deploy web UI
 
 on:
-  push:
-    branches: [main]
-    paths: ['web/**', '.github/workflows/pages.yml']
+  # every push builds the firmware first, so this also covers changes to web/
+  workflow_run:
+    workflows: [Firmware]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
   pages: write
   id-token: write
 
@@ -18,15 +23,61 @@ concurrency:
 
 jobs:
   deploy:
+    # also after a failed build, which keeps the last good firmware but still publishes web/
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.event == 'release' ||
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Assemble the site
+        run: |
+          cp -r web _site
+          mkdir -p _site/firmware
+          latest=null
+          release=null
+
+          run=$(gh run list --workflow firmware.yml --branch main --event push --status success --limit 1 \
+            --json databaseId,headSha --jq '.[0] // empty | "\(.databaseId) \(.headSha)"')
+          if [ -n "$run" ]; then
+            read -r id sha <<< "$run"
+            # artifacts expire after 90 days
+            if gh run download "$id" --pattern 'cool-s-firmware-*' --dir build; then
+              dir=$(find build -mindepth 1 -maxdepth 1 -type d | head -n 1)
+              mkdir -p _site/firmware/latest
+              cp "$dir/dfu_application.zip" _site/firmware/latest/
+              latest=$(jq --arg sha "$sha" --arg repo "$GH_REPO" \
+                '. + {file: "firmware/latest/dfu_application.zip", url: "https://github.com/\($repo)/commit/\($sha)"}' \
+                "$dir/version.json")
+            fi
+          fi
+
+          tag=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          if [ -n "$tag" ] && gh release download "$tag" --pattern '*-dfu.zip' --dir rel; then
+            file=$(ls rel | head -n 1)
+            mkdir -p _site/firmware/release
+            cp "rel/$file" _site/firmware/release/
+            release=$(gh release view "$tag" --json tagName,name,publishedAt,url | jq --arg file "firmware/release/$file" \
+              '{tag: .tagName, version: (.tagName | ltrimstr("v")), name, date: .publishedAt, url, file: $file}')
+          fi
+
+          jq -n --argjson latest "$latest" --argjson release "$release" '{latest: $latest, release: $release}' \
+            > _site/firmware/manifest.json
+          cat _site/firmware/manifest.json
+
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: web
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v5

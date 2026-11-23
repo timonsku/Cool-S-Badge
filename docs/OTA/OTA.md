@@ -1,5 +1,6 @@
 OTA Firmware Update Instructions
 =============================
+Use the WebUI for the easiest way to flash, if that gives trouble this is an alternative route.
 
 - Install Nordic Device Manager app: https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-Device-Manager
 
