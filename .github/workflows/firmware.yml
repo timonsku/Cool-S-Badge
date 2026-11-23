@@ -75,6 +75,7 @@ jobs:
         working-directory: ncs
         run: |
           west build --sysbuild --pristine always -b cool_s/nrf52840 -d ../build ../app/cool-s-firmware -- \
+            -DBOARD_ROOT="$GITHUB_WORKSPACE/app/cool-s-firmware" \
             -DDTC_OVERLAY_FILE=boards/cool-s.overlay \
             -DEXTRA_DTC_OVERLAY_FILE=app.overlay
 
