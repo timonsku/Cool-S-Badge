@@ -66,7 +66,7 @@ async function connect() {
   });
 }
 
-$('#connect').addEventListener('click', () => {
+const onConnectClick = () => {
   if (isUpdating()) {
     stopWaiting();
   } else if (app.ready) {
@@ -76,7 +76,16 @@ $('#connect').addEventListener('click', () => {
   } else {
     connect();
   }
-});
+};
+for (const button of document.querySelectorAll('.connect-button')) button.addEventListener('click', onConnectClick);
+
+// the bar appears once the header's controls are out of sight
+const topbar = $('#topbar');
+new IntersectionObserver(([entry]) => {
+  const shown = !entry.isIntersecting && entry.boundingClientRect.top < 0;
+  topbar.classList.toggle('shown', shown);
+  topbar.inert = !shown;
+}).observe($('#connection'));
 
 app.smp.addEventListener('disconnect', () => {
   if (!disconnecting && !connecting && !app.restarting && !isUpdating()) notify('The badge disconnected.', 'error');
@@ -91,11 +100,13 @@ app.addEventListener('change', () => {
   else if (app.ready) label = app.smp.device.name ?? 'Connected';
 
   $('#connection-label').textContent = label;
-  $('#connection').classList.toggle('online', app.ready);
+  for (const other of document.querySelectorAll('.connection-label')) other.textContent = label;
+  for (const box of document.querySelectorAll('.connection')) box.classList.toggle('online', app.ready);
 
-  const button = $('#connect');
-  button.textContent = reconnecting ? 'Stop waiting' : app.ready ? 'Disconnect' : 'Connect';
-  button.disabled = !navigator.bluetooth || (app.busy && !reconnecting);
+  for (const button of document.querySelectorAll('.connect-button')) {
+    button.textContent = reconnecting ? 'Stop waiting' : app.ready ? 'Disconnect' : 'Connect';
+    button.disabled = !navigator.bluetooth || (app.busy && !reconnecting);
+  }
 });
 
 window.addEventListener('beforeunload', (event) => {

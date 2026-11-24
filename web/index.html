@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'self'">
+  <meta name="theme-color" content="#dde2e9">
   <meta name="description" content="Manage media and update the firmware of a Cool-S badge over Bluetooth.">
   <title>Cool-S Badge</title>
   <link rel="icon" href="favicon.svg">
@@ -20,9 +21,21 @@
     <div id="connection" class="connection">
       <span class="led" aria-hidden="true"></span>
       <span id="connection-label" aria-live="polite">Not connected</span>
-      <button id="connect" type="button" class="primary" disabled>Connect</button>
+      <button id="connect" type="button" class="primary connect-button" disabled>Connect</button>
     </div>
   </header>
+
+  <!-- shown once the header's connection has scrolled away; the header's label is the one announced -->
+  <div id="topbar" class="topbar" inert>
+    <div class="topbar-inner">
+      <img src="favicon.svg" alt="" width="28" height="28">
+      <div class="connection">
+        <span class="led" aria-hidden="true"></span>
+        <span class="connection-label">Not connected</span>
+        <button type="button" class="primary connect-button" disabled>Connect</button>
+      </div>
+    </div>
+  </div>
 
   <main>
     <p id="browser-warning" class="banner" hidden></p>
@@ -32,7 +45,7 @@
       <button id="tab-media" type="button" role="tab" aria-selected="true" aria-controls="panel-media">Media</button>
       <button id="tab-draw" type="button" role="tab" aria-selected="false" aria-controls="panel-draw" tabindex="-1">Draw</button>
       <button id="tab-code" type="button" role="tab" aria-selected="false" aria-controls="panel-code" tabindex="-1">Code</button>
-      <button id="tab-firmware" type="button" role="tab" aria-selected="false" aria-controls="panel-firmware" tabindex="-1">Firmware Update</button>
+      <button id="tab-firmware" type="button" role="tab" aria-selected="false" aria-controls="panel-firmware" tabindex="-1">Firmware<span class="tab-long"> Update</span></button>
     </div>
 
     <section id="panel-media" class="board" role="tabpanel" aria-labelledby="tab-media">
@@ -118,7 +131,7 @@
             <input id="draw-color" type="color" aria-label="Paint color" autocomplete="off">
             <div id="draw-swatches" class="swatches" role="group" aria-label="Preset colors"></div>
           </div>
-          <p class="hint">Touch an LED, or drag across several, to paint them. Off switches an LED off. Alt-click an LED to pick up its color.</p>
+          <p class="hint">Touch an LED, or drag across several, to paint them. Off switches an LED off.<span class="mouse-only"> Alt-click an LED to pick up its color.</span></p>
           <div class="row">
             <button id="draw-fill" type="button">Fill all</button>
             <button id="draw-clear" type="button">Clear</button>
@@ -178,7 +191,7 @@
         <div class="editor-gutter" aria-hidden="true"><div id="code-gutter"></div></div>
         <div class="editor-body">
           <pre id="code-highlight" aria-hidden="true"></pre>
-          <textarea id="code-text" wrap="off" spellcheck="false" autocomplete="off" autocapitalize="off"
+          <textarea id="code-text" wrap="off" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"
                     aria-label="Lua script" aria-keyshortcuts="Control+S"></textarea>
         </div>
       </div>
@@ -221,7 +234,7 @@
       </p>
       <label id="firmware-drop" class="dropzone">
         <input id="firmware-input" type="file" accept=".zip,.bin">
-        <span>Drop the firmware here, or click to choose</span>
+        <span id="firmware-drop-text">Drop the firmware here, or click to choose</span>
         <small>Update package (.zip) or signed image (.bin)</small>
       </label>
       <p id="firmware-error" class="banner error" role="alert" hidden></p>

@@ -128,6 +128,7 @@ function changed(structure = false) {
 function buildStage() {
   const svg = $('#draw-leds');
   svg.setAttribute('viewBox', `${VIEW.x} ${VIEW.y} ${VIEW.width} ${VIEW.height}`);
+  $('#draw-stage').style.aspectRatio = `${VIEW.width} / ${VIEW.height}`;
 
   // the badge's outline: a stroke can start anywhere on it, around it the page scrolls
   const area = document.createElementNS(SVG_NS, 'path');

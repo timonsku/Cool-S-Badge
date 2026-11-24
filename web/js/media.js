@@ -1,5 +1,5 @@
 import { app } from './app.js';
-import { $, el, notify, confirmDialog, setupTabs } from './dom.js';
+import { $, el, notify, confirmDialog, setupTabs, touchScreen } from './dom.js';
 import { FORMATS, blocksFor, deviceName, uniqueName, formatBytes } from './formats.js';
 import { createZip, readZip } from './zip.js';
 import { editScript } from './code.js';
@@ -144,7 +144,9 @@ function render() {
   }
   $('#folder-path').textContent = `/${dir}`;
   $('#file-input').accept = `.${dir},${FORMATS[dir].mime}`;
-  $('#drop-text').textContent = `Drop ${FORMATS[dir].label} files here, or click to choose`;
+  $('#drop-text').textContent = touchScreen
+    ? `Tap to choose ${FORMATS[dir].label} files`
+    : `Drop ${FORMATS[dir].label} files here, or click to choose`;
   $('#lua-help').hidden = dir !== 'lua';
   update();
 }

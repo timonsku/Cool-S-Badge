@@ -1,5 +1,5 @@
 import { app } from './app.js';
-import { $, el, notify, confirmDialog } from './dom.js';
+import { $, el, notify, confirmDialog, touchScreen } from './dom.js';
 import { readFirmware, toHex } from './firmware-file.js';
 import { formatBytes } from './formats.js';
 
@@ -389,6 +389,7 @@ export async function checkUpdateResult(signal) {
 export function setupUpdate(onReconnect) {
   afterReconnect = onReconnect;
 
+  if (touchScreen) $('#firmware-drop-text').textContent = 'Tap to choose the firmware file';
   const input = $('#firmware-input');
   input.addEventListener('change', () => {
     selectFile(input.files[0]);

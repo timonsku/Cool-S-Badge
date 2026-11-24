@@ -1,5 +1,8 @@
 export const $ = (selector) => document.querySelector(selector);
 
+// phones and tablets, which cannot drop files and tap instead of clicking
+export const touchScreen = matchMedia('(pointer: coarse)').matches;
+
 // Strings become text nodes, so names coming from the badge are never parsed as HTML.
 export function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);

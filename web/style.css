@@ -57,11 +57,29 @@ button.link { min-height: 0; padding: 0; border: 0; background: none; text-decor
 .dropzone:focus-within { outline: 3px solid var(--led); outline-offset: 2px; }
 
 .connection { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+
+/* compact copy of the connection controls, while the header is scrolled away */
+html { scroll-padding-top: 72px; }
+.topbar {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 10;
+  border-bottom: 2px solid var(--ink);
+  background: var(--desk);
+  box-shadow: 0 2px 8px rgb(21 23 28 / 15%);
+  transform: translateY(-110%);
+  transition: transform .2s ease;
+}
+.topbar.shown { transform: none; }
+.topbar-inner { display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 900px; margin: 0 auto; padding: 8px 16px; }
+.topbar .connection { flex-wrap: nowrap; min-width: 0; }
+.topbar .connection-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .topbar { transition: none; } }
 .led { width: 14px; height: 14px; border: 2px solid var(--ink); border-radius: 50%; }
 .online .led { background: #35e07a; box-shadow: 0 0 8px #35e07a; }
 
 /* tabs */
-.tabs { display: flex; gap: 6px; padding-left: var(--chamfer); }
+.tabs { display: flex; gap: 6px; padding-left: var(--chamfer); overflow-x: auto; }
 .tabs button { border-bottom: 0; border-radius: 6px 6px 0 0; background: transparent; font-weight: 600; }
 .tabs [aria-selected="true"] { background: var(--ink); color: var(--mask); }
 
@@ -272,11 +290,12 @@ dialog p { overflow-wrap: anywhere; }
 .stage {
   --paint: #ff0000;
   position: sticky;
-  top: 12px;
-  height: min(78vh, 700px);
+  /* below the connection bar */
+  top: 68px;
+  height: min(calc(100vh - 92px), 700px);
   min-height: 380px;
-  border-radius: 6px;
-  background: radial-gradient(circle at 50% 45%, #6b727e, #464b54 80%);
+  /* only as wide as the badge (draw.js sets its aspect ratio), so beside it the page scrolls */
+  justify-self: center;
 }
 .stage canvas, .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 /* the page scrolls over the stage, only the badge itself takes strokes */
@@ -291,7 +310,10 @@ dialog p { overflow-wrap: anywhere; }
   cursor: crosshair;
   outline: none;
 }
-.led-cell:hover { fill-opacity: .35; stroke: var(--ink); stroke-width: .45; }
+/* a tap would leave the highlight on the last LED touched */
+@media (hover: hover) {
+  .led-cell:hover { fill-opacity: .35; stroke: var(--ink); stroke-width: .45; }
+}
 .led-cell:focus-visible { stroke: var(--led); stroke-width: .8; }
 
 .studio-tools { min-width: 0; }
@@ -365,7 +387,8 @@ dialog p { overflow-wrap: anywhere; }
 
 @media (max-width: 720px) {
   .studio { grid-template-columns: minmax(0, 1fr); }
-  .stage { position: relative; top: 0; height: 64vh; min-height: 320px; }
+  /* svh, so the stage does not resize as the address bar comes and goes */
+  .stage { position: relative; top: 0; height: 64vh; height: 64svh; min-height: 320px; }
 }
 
 @media (max-width: 520px) {
@@ -374,6 +397,17 @@ dialog p { overflow-wrap: anywhere; }
   .subtabs button { flex: 1; }
   .switch { margin-left: 0; }
   #refresh { margin-left: auto; }
+  .tabs { gap: 4px; padding-left: 8px; }
+  .tabs button { flex: 1 1 auto; padding: 6px 8px; }
+  .tab-long { display: none; }
+}
+
+@media (pointer: coarse) {
+  .mouse-only { display: none; }
+  .swatch { width: 38px; height: 38px; min-height: 38px; }
+  .note .close { min-width: 40px; min-height: 40px; margin: -8px -8px -8px 0; font-size: 22px; }
+  /* iOS zooms into text fields with a font below 16 px */
+  .editor { --code-font: 16px/1.5 ui-monospace, "Cascadia Code", Consolas, Menlo, monospace; }
 }
 
 /* Code tab: a transparent textarea over its syntax-coloured copy */
