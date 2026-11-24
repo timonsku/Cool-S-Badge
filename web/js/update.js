@@ -13,8 +13,8 @@ const MAX_DROPS_WITHOUT_PROGRESS = 5;
 // New firmware confirms itself after 30 healthy seconds and reverts after 90 bad ones.
 // Releases up to v0.6 confirm at boot.
 const PROVING_TIMEOUT = 120000;
-const PRESS_PROMPT = 'Press each of the four buttons on the badge twice to allow the update. ' +
-  'It breathes yellow while it waits, for up to 30 seconds.';
+// how long the badge waits for the presses (cool-s-firmware/src/update_approval.c)
+const APPROVAL_SECONDS = 30;
 
 let selected = null;
 let selection = 0;
@@ -26,6 +26,7 @@ let afterReconnect;
 let manifest = null;
 let downloading = false;
 let announced = '';
+let pressTimer = null;
 
 const hexHash = (image) => (image?.hash ? toHex(image.hash) : '');
 const activeImage = () => app.images.find((image) => image.active);
@@ -34,13 +35,33 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const isUpdating = () => updating !== null;
 export const stopWaiting = () => updating?.abort();
 
+// Any later status means the badge answered, so the prompt goes away.
 function setStatus(text, { kind = '', progress } = {}) {
+  clearInterval(pressTimer);
+  $('#press-prompt').hidden = true;
   $('#update-status').textContent = text;
   $('#update-status').className = `status ${kind}`;
   const bar = $('#update-bar');
   bar.hidden = progress === undefined;
   if (progress === null) bar.removeAttribute('value');
   else if (progress !== undefined) bar.value = progress;
+}
+
+function askForPresses() {
+  setStatus('To confirm the update, press all 4 buttons on the badge twice, the order does not matter.', { progress: null });
+  const deadline = Date.now() + APPROVAL_SECONDS * 1000;
+  const tick = () => {
+    const left = Math.ceil((deadline - Date.now()) / 1000);
+    $('#press-countdown').textContent = left > 0
+      ? `${left} seconds left`
+      : 'Time is up. If the badge no longer breathes yellow, start the update again.';
+    if (left <= 0) clearInterval(pressTimer);
+  };
+  tick();
+  pressTimer = setInterval(tick, 1000);
+  const prompt = $('#press-prompt');
+  prompt.hidden = false;
+  prompt.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 // '0.10' is newer than '0.9'
@@ -173,14 +194,14 @@ async function install(firmware, title = 'Update the firmware?', message = KEEP_
       if (!uploaded) throw new Error('The badge does not report the uploaded image. Please try again.');
       if (!uploaded.pending) {
         // straight after an upload the presses were already given
-        if (app.needsPresses && !uploadedNow) setStatus(PRESS_PROMPT, { kind: 'waiting' });
+        if (app.needsPresses && !uploadedNow) askForPresses();
         await app.badge.testImage(firmware.hash);
       }
 
       await restartInto(target, signal);
     } catch (error) {
       const reason = app.needsPresses && app.badge.isNotApproved(error)
-        ? 'It was not allowed on the badge. Press Update firmware to try again.'
+        ? 'It was not confirmed on the badge, which needs all 4 buttons pressed twice. Start the update again.'
         : error.message;
       setStatus(`Update failed: ${reason}`, { kind: 'error' });
       // a reconnect along the way cleared the media list
@@ -223,7 +244,7 @@ async function uploadResumable(firmware, signal) {
 
   for (;;) {
     if (furthest === 0) {
-      if (app.needsPresses) setStatus(PRESS_PROMPT, { kind: 'waiting' });
+      if (app.needsPresses) askForPresses();
       else setStatus('Preparing flash. This can take up to a minute…', { progress: null });
     }
     try {

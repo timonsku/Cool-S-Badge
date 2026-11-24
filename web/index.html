@@ -217,7 +217,7 @@
         Download a <code>*-dfu.zip</code> from the
         <a href="https://github.com/timonsku/Cool-S-Badge/releases" target="_blank" rel="noopener noreferrer">releases</a>,
         then select it here.
-        Newer firmware asks you to press each of the badge's four buttons twice before it accepts an update.
+        Newer firmware asks you to press all 4 buttons on the badge twice before it accepts an update.
       </p>
       <label id="firmware-drop" class="dropzone">
         <input id="firmware-input" type="file" accept=".zip,.bin">
@@ -233,6 +233,15 @@
       <p id="firmware-installed" class="status success" hidden>The badge is already running this firmware.</p>
 
       <button id="install" type="button" class="primary" disabled>Update firmware</button>
+      <div id="press-prompt" class="press-prompt" role="alert" hidden>
+        <h3>Press all 4 buttons on the badge twice</h3>
+        <ol>
+          <li>The badge breathes yellow while it waits.</li>
+          <li>Press <strong>all 4 buttons twice</strong>, one button after the other.</li>
+          <li>The update then continues by itself. You do not need to do anything here.</li>
+        </ol>
+        <p id="press-countdown" class="press-countdown" aria-live="off"></p>
+      </div>
       <div class="progress">
         <p id="update-status" class="status" role="status"></p>
         <progress id="update-bar" max="1" aria-label="Update progress" hidden></progress>
