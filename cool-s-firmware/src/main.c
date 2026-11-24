@@ -51,7 +51,7 @@
 #include "media_files.h"
 #include "preview.h"
 #include "lua_anim.h"
-// #include "AnimatedGIF.h"
+#include "badge_settings.h"
 
 #ifdef CONFIG_MCUMGR_GRP_STAT
 #include <zephyr/mgmt/mcumgr/grp/stat_mgmt/stat_mgmt.h>
@@ -62,12 +62,6 @@
 #include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
 #include <zephyr/dfu/mcuboot.h>
 
-#include <zephyr/data/json.h>
-
-struct settings {
-    float brightness;
-};
-
 gd_GIF *gif;
 /* the GIF plays from the preview buffer, not from a file */
 static bool gif_is_preview;
@@ -75,13 +69,6 @@ static bool gif_is_preview;
 uint8_t gif_frame[GD_MAX_PIXELS * 3];
 uint8_t *gif_color;
 int64_t gif_next_frame_at;
-
-struct settings global_settings;
-struct settings last_saved_settings;
-
-static const struct json_obj_descr settings_descr[] = {
-    JSON_OBJ_DESCR_PRIM(struct settings, brightness, JSON_TOK_NUMBER),
-};
 
 #define STORAGE_PARTITION_LABEL	storage_partition
 #define STORAGE_PARTITION_ID	FIXED_PARTITION_ID(STORAGE_PARTITION_LABEL)
@@ -119,7 +106,10 @@ static struct fs_mount_t littlefs_mnt = {
 
 static struct k_sem sync;
 
-static uint8_t device_name[] = {'L', 'E', 'D', '_', 'B', 'L','E','_','C', 'O', 'O', 'L','0','0','0','0'};
+#define NAME_PREFIX_LEN (sizeof(BADGE_NAME_PREFIX) - 1)
+/* what is advertised, and LED_BLE_COOL plus the end of the address unless the user named the badge */
+static char device_name[NAME_PREFIX_LEN + BADGE_NAME_MAX + 1];
+static char default_name[sizeof(device_name)];
 
 const struct device *led_en = DEVICE_DT_GET(DT_NODELABEL(led_pwr));
 #define STRIP_NODE		DT_ALIAS(led_strip)
@@ -222,6 +212,7 @@ enum {
 	REQUEST_SAVE_DRAWING = BIT(3),
 	REQUEST_PREVIEW_PLAY = BIT(4),
 	REQUEST_PREVIEW_END = BIT(5),
+	REQUEST_RENDER = BIT(8),
 };
 static atomic_t requests;
 
@@ -247,10 +238,10 @@ static struct k_work adv_work;
 #define BT_UUID_IPIXEL_NOTIFY    BT_UUID_DECLARE_16(0xfa03)
 
 
-static const struct bt_data ad[] = {
+/* the name's length is set by apply_name() */
+static struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-	BT_DATA(BT_DATA_NAME_COMPLETE, device_name, sizeof(device_name)),
-	
+	BT_DATA(BT_DATA_NAME_COMPLETE, device_name, 0),
 };
 
 static const uint8_t led_scan_resp[] = {0x00, 0x72, 0x00, 0x01, 0x05, 0x01};
@@ -288,7 +279,6 @@ int process_gif(const char *path);
 void live_draw(uint8_t pixel_index, struct led_rgb color);
 struct led_rgb gamma_correction(struct led_rgb color);
 struct led_rgb set_brightness(struct led_rgb color, float brightness);
-void set_global_brightness(float brightness);
 void clear_display();
 void display_debug();
 void display_warn();
@@ -301,29 +291,6 @@ void playback_animation(struct pixel_animation *animation);
 void display_state_set(enum display_state state);
 void display_state_process();
 int save_gif_to_file(const char *filename, const uint8_t* gif_data, size_t gif_size);
-int save_settings();
-int load_settings();
-int default_settings();
-void print_settings();
-
-void save_pending_settings(struct k_work *work)
-{
-    int change_count = 0;
-	change_count += (last_saved_settings.brightness != global_settings.brightness);
-	if(change_count != 0){
-		LOG_INF("Saving changed settings");
-		save_settings();
-	}
-}
-
-K_WORK_DEFINE(save_work, save_pending_settings);
-
-void settings_timer_exp(struct k_timer *dummy)
-{
-    k_work_submit(&save_work);
-}
-
-K_TIMER_DEFINE(save_settings_timer, settings_timer_exp, NULL);
 
 static ssize_t iPixel_write(struct bt_conn *conn,
 			 const struct bt_gatt_attr *attr,
@@ -426,9 +393,8 @@ void parseCommandPacket(const void *buf, uint16_t len)
 			break;
 		case 0x05:
 			if(data[2] == 0x04) {
-				LOG_INF("Brightness adjustment packet received: %f / %u", (double)(data[4] / 100.0f), data[4]);
-				float brightness = data[4] / 100.0f;
-				set_global_brightness(brightness);
+				LOG_INF("Brightness adjustment packet received: %u", data[4]);
+				badge_settings_set_brightness(MIN(data[4], 100));
 			}
 			break;
 		case 0x04:
@@ -596,8 +562,9 @@ void render(){
 		regulator_enable(led_en);
 		k_sleep(K_USEC(500));
 	}
+	float brightness = badge_settings_brightness() / 100.0f;
 	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
-		pixels[i] = set_brightness(pixels_raw[i], global_settings.brightness);
+		pixels[i] = set_brightness(pixels_raw[i], brightness);
 		pixels[i] = gamma_correction(pixels[i]);
 	}
 	int rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
@@ -606,9 +573,34 @@ void render(){
 	}
 }
 
-void set_global_brightness(float brightness) {
-	global_settings.brightness = brightness;
-	render();
+// on the main loop, which is the one that renders
+void display_brightness_changed(void) {
+	atomic_or(&requests, REQUEST_RENDER);
+}
+
+// used from the next time the badge advertises, which is after a disconnect
+static void apply_name(void) {
+	struct badge_settings s;
+	badge_settings_get(&s);
+	if (s.name[0]) {
+		snprintk(device_name, sizeof(device_name), BADGE_NAME_PREFIX "%s", s.name);
+	} else {
+		strcpy(device_name, default_name);
+	}
+	ad[1].data_len = strlen(device_name);
+	bt_set_name(device_name);
+	// only succeeds while advertising
+	(void)bt_le_adv_update_data(ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+	LOG_INF("Device name: %s", device_name);
+}
+
+void bluetooth_name_changed(void) {
+	apply_name();
+}
+
+void bluetooth_default_name(char *out, size_t len) {
+	strncpy(out, &default_name[NAME_PREFIX_LEN], len - 1);
+	out[len - 1] = '\0';
 }
 
 
@@ -1149,6 +1141,7 @@ void check_for_recovery_mode()
 		LOG_INF("Rebooting into MCUboot serial recovery mode now...");
 		recovery_timeout = 0;
 		lua_anim_stop();
+		badge_settings_flush();
 		int rc = fs_unmount(&littlefs_mnt);
 		if (rc < 0) {
 			LOG_ERR("Error unmounting littlefs [%d]", rc);
@@ -1180,84 +1173,6 @@ int save_gif_to_file(const char *filename, const uint8_t* gif_data, size_t gif_s
 	return rc;
 }
 
-int save_settings(){
-    char buffer[256];
-    int rc;
-	
-    rc = json_obj_encode_buf(settings_descr, ARRAY_SIZE(settings_descr),
-                              &global_settings,
-                              buffer, sizeof(buffer));
-    if (rc < 0) {
-		LOG_ERR("Unable to encode settings to JSON");
-        return rc;
-    }
-	struct fs_file_t file;
-	
-
-	fs_file_t_init(&file);
-
-	rc = fs_open(&file, "/lfs1/settings.json", FS_O_CREATE | FS_O_WRITE);
-	if (rc < 0) {
-		LOG_ERR("Error opening settings.json: %d", rc);
-		return rc;
-	}
-	rc = fs_write(&file, buffer, sizeof(buffer));
-	if (rc < 0) {
-		LOG_ERR("Error writing to file settings.json: %d", rc);
-		fs_close(&file);
-		return rc;
-	}
-	fs_close(&file);
-	last_saved_settings = global_settings;
-	return 0;
-}
-
-int load_settings(void)
-{
-
-	struct fs_file_t file;
-	int rc;
-	char buffer[256];
-
-	fs_file_t_init(&file);
-
-	rc = fs_open(&file, "/lfs1/settings.json", FS_O_READ);
-	if (rc < 0) {
-		LOG_ERR("Error opening settings.json: %d", rc);
-		return rc;
-	}
-	rc = fs_read(&file, buffer, sizeof(buffer));
-	if (rc < 0) {
-		LOG_ERR("Error reading from file settings.json: %d", rc);
-		fs_close(&file);
-		return rc;
-	}
-	fs_close(&file);
-
-    rc = json_obj_parse(buffer, strlen(buffer),
-                         settings_descr, ARRAY_SIZE(settings_descr),
-                         &global_settings);
-    if (rc < 0) {
-        LOG_ERR("Unable to decode settings to JSON");
-		return rc;
-    }
-
-	last_saved_settings = global_settings;
-
-	return 0;
-}
-
-int default_settings(){
-	global_settings.brightness = 0.3f;
-	last_saved_settings = global_settings;
-	return 0;
-}
-
-void print_settings(){
-	LOG_INF("Settings:");
-	LOG_INF("Brightness: %f",(double)global_settings.brightness);
-}
-
 static void power_off_now(void)
 {
 	LOG_INF("Shutting down now...");
@@ -1271,6 +1186,7 @@ static void power_off_now(void)
 		}
 	}
 	lua_anim_stop();
+	badge_settings_flush();
 	int rc = fs_unmount(&littlefs_mnt);
 	if (rc < 0) {
 		LOG_ERR("Error unmounting littlefs [%d]", rc);
@@ -1360,6 +1276,9 @@ static void migrate_legacy_default(void)
 static void handle_requests(void)
 {
 	atomic_val_t r = atomic_clear(&requests);
+	if (r & REQUEST_RENDER) {
+		render();
+	}
 	if (r & REQUEST_PREVIEW_PLAY) {
 		play_preview();
 	}
@@ -1413,11 +1332,15 @@ int main(void)
 		migrate_legacy_default();
 	}
 
-	if(load_settings() != 0){
-		LOG_WRN("Falling back to default settings");
-		default_settings();
+	if (storage_ok) {
+		badge_settings_load();
 	}
-	print_settings();
+	// at power on and on waking, the badge shows the mode the settings name
+	{
+		struct badge_settings s;
+		badge_settings_get(&s);
+		display_state_set(media_kinds[s.boot < MEDIA_KINDS ? s.boot : MEDIA_PNG].loading);
+	}
 
 	if (!device_is_ready(strip)) {
 		LOG_ERR("LED strip device %s is not ready", strip->name);
@@ -1446,20 +1369,11 @@ int main(void)
 	size_t count = 1;
 	bt_id_get(&addr, &count);
 	bt_addr_le_to_str(&addr, addr_s, sizeof(addr_s));
-	// null terminated device name
-	char updated_name[sizeof(device_name)+1];
-	updated_name[sizeof(device_name)] = '\0';
-
 	LOG_INF("Bluetooth Address: %s", addr_s);
-	memcpy(&device_name[sizeof(device_name) - 8], &addr_s[6], 2);
-	memcpy(&device_name[sizeof(device_name) - 6], &addr_s[9], 2);
-	memcpy(&device_name[sizeof(device_name) - 4], &addr_s[12], 2);
-	memcpy(&device_name[sizeof(device_name) - 2], &addr_s[15], 2);
-
-	LOG_INF("Device name: %s.", device_name);
-	bt_le_adv_update_data(ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
-	memcpy(&updated_name, &device_name, sizeof(device_name));
-	bt_set_name((const char *)updated_name);
+	// the last four bytes of the address
+	snprintk(default_name, sizeof(default_name), BADGE_NAME_PREFIX "COOL%.2s%.2s%.2s%.2s",
+		 &addr_s[6], &addr_s[9], &addr_s[12], &addr_s[15]);
+	apply_name();
 
 	STATS_SET(smp_svr_stats, version_major, APP_VERSION_MAJOR);
 	STATS_SET(smp_svr_stats, version_minor, APP_VERSION_MINOR);
@@ -1470,9 +1384,6 @@ int main(void)
 	k_work_init(&adv_work, adv_work_handler);
 	advertising_start();
 
-	// we check every few seconds for outstanding settings changes
-	// we don't want to wear out flash too much by constant small writes
-	k_timer_start(&save_settings_timer, K_SECONDS(5), K_SECONDS(5));
 	
 	bool prompting = false;
 

@@ -10,7 +10,8 @@ const RESERVED_BLOCKS = 2;
 const MAX_PREVIEW_SIDE = 2048;
 // The files the badge shows when nothing in a folder is selected, in the littlefs root.
 const DEFAULTS = Object.keys(FORMATS).map((folder) => `default.${folder}`);
-const SETTINGS = 'settings.json';
+// settings.json up to firmware v0.7, which later firmware ignores
+const SETTINGS = ['settings.cbor', 'settings.json'];
 
 let dir = 'gif';
 let storage; // undefined: not loaded, null: firmware without media management
@@ -314,7 +315,7 @@ export function uploadFiles(selected, { folder = dir, progress = showProgress, r
 }
 
 // What firmware without walk() can still back up: the files the badge knows by name.
-const KNOWN_ROOT_FILES = [...DEFAULTS, SETTINGS];
+const KNOWN_ROOT_FILES = [...DEFAULTS, ...SETTINGS];
 // '/lfs1/' and the path have to fit CONFIG_MCUMGR_GRP_FS_PATH_LEN.
 const MAX_PATH = 64 - '/lfs1/'.length;
 const utf8 = new TextEncoder();
@@ -334,7 +335,7 @@ async function listBadge() {
   };
 }
 
-// A backup holds every file on the badge, laid out as on its storage: settings.json,
+// A backup holds every file on the badge, laid out as on its storage: settings.cbor,
 // default.gif, default.png, default.lua, gif/*.gif, png/*.png, lua/*.lua and anything else there is.
 // Hidden files are left out, they are unfinished uploads and temporary copies.
 // Throws if any file could not be read, so nothing relies on a partial backup.
@@ -489,7 +490,7 @@ function restoreBackup(file) {
     const needed = restore.reduce((sum, { path, data }) =>
       sum + blocksFor(data.length, storage.block) - blocksFor(sizes.get(path) ?? 0, storage.block), 0);
     const available = Math.max(0, storage.free - RESERVED_BLOCKS);
-    const settings = restore.some(({ path }) => path === SETTINGS);
+    const settings = restore.some(({ path }) => SETTINGS.includes(path));
 
     const lines = [`${restore.length} ${restore.length === 1 ? 'file' : 'files'} will be written to the badge.`];
     if (replaced.length) lines.push(`Replaced: ${replaced.map(({ path }) => path).join(', ')}.`);
@@ -532,7 +533,7 @@ function restoreBackup(file) {
     }
     if (left.length) notify(`Not enough space for: ${left.join(', ')}`, 'error');
     if (restored) notify(`Restored ${restored} ${restored === 1 ? 'file' : 'files'}.`, 'success');
-    if (settings && !left.includes(SETTINGS)) {
+    if (settings && !SETTINGS.some((path) => left.includes(path))) {
       notify('Restart the badge to load the restored settings. Until then, changing its brightness ' +
         'would save over them.');
     }

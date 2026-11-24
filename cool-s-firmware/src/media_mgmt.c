@@ -21,8 +21,15 @@
  *   9 read   {}                   {running, path, error}  the last script started, error ""
  *                                     unless it failed
  *  10 write  {}                   {}  restart and erase all storage, settings included
+ *  11 read   {}                   {brightness, boot, name, default, max}
+ *  12 write  {brightness?, boot?, name?}  {}  any of them, see badge_settings.h
  *
- * 6 and 7 take a full path such as "/lfs1/settings.json", for backups of the
+ * brightness is in percent, boot is the folder of the mode the badge starts
+ * in, name is what follows "LED_BLE_" in its Bluetooth name, "" for default,
+ * the name used then, and max the longest name. A new name is advertised
+ * after the next disconnect.
+ *
+ * 6 and 7 take a full path such as "/lfs1/settings.cbor", for backups of the
  * whole file system. Names starting with "." (temporary files) are neither
  * listed nor accepted.
  *
@@ -31,8 +38,7 @@
  *
  * A preview is never written to flash, see preview.h. It plays once its last
  * piece has arrived, until the next one, a live drawing or a button press.
- *
- * The application slot is nearly full, so keep this file small.
+*
  */
 
 #include <errno.h>
@@ -53,6 +59,7 @@
 #include "media_files.h"
 #include "preview.h"
 #include "lua_anim.h"
+#include "badge_settings.h"
 
 #define MEDIA_GROUP_ID	MGMT_GROUP_ID_PERUSER
 #define MOUNT_POINT	"/lfs1"
@@ -441,6 +448,59 @@ static int media_format(struct smp_streamer *ctxt)
 	return MGMT_ERR_EOK;
 }
 
+static int media_settings(struct smp_streamer *ctxt)
+{
+	zcbor_state_t *zse = ctxt->writer->zs;
+	struct badge_settings s;
+	char name[BADGE_NAME_MAX + 1];
+	bool ok;
+
+	badge_settings_get(&s);
+	bluetooth_default_name(name, sizeof(name));
+	ok = zcbor_tstr_put_lit(zse, "brightness") && zcbor_uint32_put(zse, s.brightness) &&
+	     zcbor_tstr_put_lit(zse, "boot") && zcbor_tstr_put_term(zse, badge_boot_dir(s.boot), 4) &&
+	     zcbor_tstr_put_lit(zse, "name") && zcbor_tstr_put_term(zse, s.name, sizeof(s.name)) &&
+	     zcbor_tstr_put_lit(zse, "default") && zcbor_tstr_put_term(zse, name, sizeof(name)) &&
+	     zcbor_tstr_put_lit(zse, "max") && zcbor_uint32_put(zse, BADGE_NAME_MAX);
+
+	return MGMT_RETURN_CHECK(ok);
+}
+
+static int media_settings_set(struct smp_streamer *ctxt)
+{
+	struct zcbor_string boot = { 0 };
+	struct zcbor_string name = { 0 };
+	uint32_t brightness = 0;
+	size_t decoded;
+
+	struct zcbor_map_decode_key_val fields[] = {
+		ZCBOR_MAP_DECODE_KEY_DECODER("brightness", zcbor_uint32_decode, &brightness),
+		ZCBOR_MAP_DECODE_KEY_DECODER("boot", zcbor_tstr_decode, &boot),
+		ZCBOR_MAP_DECODE_KEY_DECODER("name", zcbor_tstr_decode, &name),
+	};
+
+	if (zcbor_map_decode_bulk(ctxt->reader->zs, fields, ARRAY_SIZE(fields), &decoded)) {
+		return MGMT_ERR_EINVAL;
+	}
+	/* all checked before any is changed */
+	if ((fields[0].found && brightness > 100) ||
+	    (fields[1].found && badge_boot_from_dir(boot.value, boot.len) < 0) ||
+	    (fields[2].found && !badge_name_valid(name.value, name.len))) {
+		return MGMT_ERR_EINVAL;
+	}
+	if (fields[0].found) {
+		badge_settings_set_brightness(brightness);
+	}
+	if (fields[1].found) {
+		badge_settings_set_boot(boot.value, boot.len);
+	}
+	if (fields[2].found) {
+		badge_settings_set_name(name.value, name.len);
+	}
+
+	return MGMT_ERR_EOK;
+}
+
 static const struct mgmt_handler media_handlers[] = {
 	{ .mh_read = media_info },
 	{ .mh_read = media_list },
@@ -453,6 +513,8 @@ static const struct mgmt_handler media_handlers[] = {
 	{ .mh_write = media_run },
 	{ .mh_read = media_script_status },
 	{ .mh_write = media_format },
+	{ .mh_read = media_settings },
+	{ .mh_write = media_settings_set },
 };
 
 static struct mgmt_group media_group = {

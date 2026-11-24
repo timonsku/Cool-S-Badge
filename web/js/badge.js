@@ -7,7 +7,7 @@ const GROUP = { OS: 0, IMAGE: 1, STAT: 2, FS: 8, MEDIA: 64 };
 const OS = { RESET: 5 };
 const IMAGE = { STATE: 0, UPLOAD: 1 };
 const FS = { FILE: 0, CLOSE: 4 };
-const MEDIA = { INFO: 0, LIST: 1, PREPARE: 2, COMMIT: 3, DELETE: 4, PREVIEW: 5, WALK: 6, PUT: 7, RUN: 8, SCRIPT: 9, FORMAT: 10 }; // cool-s-firmware/src/media_mgmt.c
+const MEDIA = { INFO: 0, LIST: 1, PREPARE: 2, COMMIT: 3, DELETE: 4, PREVIEW: 5, WALK: 6, PUT: 7, RUN: 8, SCRIPT: 9, FORMAT: 10, SETTINGS: 11, SET_SETTINGS: 12 }; // cool-s-firmware/src/media_mgmt.c
 
 const MOUNT = '/lfs1';
 
@@ -47,6 +47,42 @@ export class Badge {
     const packet = Uint8Array.of(10, 0, 5, 1, 0, color >> 16, color >> 8, color, index, 0);
     // with a response, so nothing is dropped and writes cannot pile up
     await writeWithResponse(this.#pixelWriter, packet);
+  }
+
+  // The iPixel app's brightness packet, for firmware without settings(): 5, 0, command 4, 0x80, percent.
+  async #ipixelBrightness(percent) {
+    if (!this.#pixelWriter) {
+      const service = await this.smp.device.gatt.getPrimaryService(IPIXEL_SERVICE);
+      this.#pixelWriter = await service.getCharacteristic(IPIXEL_WRITE);
+    }
+    await writeWithResponse(this.#pixelWriter, Uint8Array.of(5, 0, 4, 0x80, percent));
+  }
+
+  // { brightness, boot, name, default, max }, see media_mgmt.c. null if the firmware has no settings.
+  async settings() {
+    try {
+      return await this.smp.request(READ, GROUP.MEDIA, MEDIA.SETTINGS);
+    } catch (error) {
+      if (error instanceof SmpError && error.group === null && error.rc === RC.NOT_SUPPORTED) return null;
+      throw error;
+    }
+  }
+
+  // any of { brightness, boot, name }; the badge saves them a few seconds later
+  async setSettings(changes) {
+    try {
+      await this.smp.request(WRITE, GROUP.MEDIA, MEDIA.SET_SETTINGS, changes);
+    } catch (error) {
+      if (error instanceof SmpError && error.group === null && error.rc === RC.INVALID) {
+        throw new Error('The badge did not accept that setting.');
+      }
+      throw error;
+    }
+  }
+
+  // works with any firmware, the oldest ones through the iPixel packet
+  setBrightness(percent, legacy) {
+    return legacy ? this.#ipixelBrightness(percent) : this.setSettings({ brightness: percent });
   }
 
   async firmwareInfo() {

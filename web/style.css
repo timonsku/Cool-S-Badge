@@ -470,3 +470,29 @@ dialog p { overflow-wrap: anywhere; }
 .tok-comment { color: #6e7781; font-style: italic; }
 #code-status { min-height: 1.5em; margin: 12px 0; }
 .file-actions { display: flex; gap: 8px; }
+
+/* Settings tab */
+.settings h2 { margin-top: 20px; }
+.settings h2:first-of-type { margin-top: 0; }
+.slider { display: flex; align-items: center; gap: 12px; max-width: 480px; }
+.slider input { flex: 1; min-width: 0; height: 40px; accent-color: var(--ink); }
+.slider output { min-width: 4.5ch; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.choices { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; }
+.choices legend { padding: 0; }
+.choices legend h2 { margin-top: 20px; }
+.choices label {
+  display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 14px;
+  border: 2px solid var(--ink); border-radius: 4px; background: var(--mask); cursor: pointer;
+}
+.choices label:has(:checked) { background: var(--ink); color: var(--mask); font-weight: 600; }
+.choices label:has(:disabled) { opacity: .4; cursor: not-allowed; }
+.choices input { margin: 0; accent-color: var(--led); }
+.name-field { flex: 1 1 260px; flex-wrap: nowrap; gap: 0; max-width: 360px; }
+.name-prefix {
+  align-self: stretch; display: flex; align-items: center; padding: 0 8px;
+  border: 2px solid var(--ink); border-right: 0; border-radius: 4px 0 0 4px; background: var(--desk);
+}
+.name-field input { flex: 1; min-width: 0; border-radius: 0 4px 4px 0; }
+.name-field input::placeholder { color: var(--muted); }
+.name-field input[aria-invalid="true"] { border-color: var(--bad); }
+.hint.error { color: var(--bad); }

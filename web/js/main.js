@@ -3,6 +3,7 @@ import { $, notify, setupTabs } from './dom.js';
 import { setupMedia, refreshMedia, resetMedia } from './media.js';
 import { setupDraw, leaveDraw } from './draw.js';
 import { setupCode } from './code.js';
+import { setupSettings, loadSettings, resetSettings } from './settings.js';
 import { setupUpdate, isUpdating, stopWaiting, loadFirmwareState, checkUpdateResult } from './update.js';
 
 let connecting = false;
@@ -20,12 +21,22 @@ async function loadMedia() {
 const updateMedia = setupMedia();
 const showDraw = setupDraw();
 const showCode = setupCode();
-setupUpdate(loadMedia);
+const showSettings = setupSettings();
+// after an update the badge restarts, and comes back with the new firmware's features
+setupUpdate(async () => {
+  await loadMedia();
+  await loadSettings();
+});
 
 const selectMainTab = setupTabs($('#main-tabs'), (tab) => {
   if (tab.id === 'tab-media') updateMedia();
   // the editor polls the badge in the background, once the previews have stopped
-  else app.stopBackground().then(() => { if (tab.id === 'tab-code') showCode(); });
+  else {
+    app.stopBackground().then(() => {
+      if (tab.id === 'tab-code') showCode();
+      if (tab.id === 'tab-settings') showSettings();
+    });
+  }
   if (tab.id === 'tab-draw') showDraw();
   else leaveDraw();
 });
@@ -51,9 +62,11 @@ async function connect() {
     app.changed();
     try {
       resetMedia();
+      resetSettings();
       await app.smp.connect();
       await loadFirmwareState();
       await loadMedia();
+      await loadSettings();
       if (!app.smp.connected) return;
       app.ready = true;
       await checkUpdateResult();
@@ -90,6 +103,7 @@ new IntersectionObserver(([entry]) => {
 app.smp.addEventListener('disconnect', () => {
   if (!disconnecting && !connecting && !app.restarting && !isUpdating()) notify('The badge disconnected.', 'error');
   resetMedia();
+  resetSettings();
 });
 
 app.addEventListener('change', () => {

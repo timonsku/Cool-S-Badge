@@ -45,6 +45,7 @@
       <button id="tab-media" type="button" role="tab" aria-selected="true" aria-controls="panel-media">Media</button>
       <button id="tab-draw" type="button" role="tab" aria-selected="false" aria-controls="panel-draw" tabindex="-1">Draw</button>
       <button id="tab-code" type="button" role="tab" aria-selected="false" aria-controls="panel-code" tabindex="-1">Code</button>
+      <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="panel-settings" tabindex="-1">Settings</button>
       <button id="tab-firmware" type="button" role="tab" aria-selected="false" aria-controls="panel-firmware" tabindex="-1">Firmware<span class="tab-long"> Update</span></button>
     </div>
 
@@ -207,6 +208,46 @@
         <span id="code-progress-label"></span>
         <progress id="code-progress-bar" max="1" value="0" aria-labelledby="code-progress-label"></progress>
       </div>
+    </section>
+
+    <section id="panel-settings" class="board settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+      <p id="settings-disconnected" class="hint">Connect a badge to change its settings.</p>
+      <div id="settings-unsupported" class="banner" hidden>
+        The firmware on this badge can only change its brightness from here.
+        <button id="settings-go-firmware" type="button" class="link">Update the firmware</button>
+        to also choose what it starts with and rename it.
+      </div>
+
+      <h2><label for="settings-brightness">Brightness</label></h2>
+      <div class="slider">
+        <input id="settings-brightness" type="range" min="0" max="100" step="1" value="30" disabled
+               autocomplete="off" aria-describedby="settings-brightness-hint">
+        <output id="settings-brightness-value" for="settings-brightness">–</output>
+      </div>
+      <p id="settings-brightness-hint" class="hint"></p>
+
+      <fieldset class="choices">
+        <legend><h2>Start with</h2></legend>
+        <label><input type="radio" name="settings-boot" value="png" disabled> Picture</label>
+        <label><input type="radio" name="settings-boot" value="gif" disabled> GIF</label>
+        <label><input type="radio" name="settings-boot" value="lua" disabled> Lua script</label>
+      </fieldset>
+      <p class="hint">
+        What the badge shows when it is switched on or wakes up: its default file of that kind.
+        Without one, it shows its picture.
+      </p>
+
+      <h2><label for="settings-name">Bluetooth name</label></h2>
+      <form id="settings-name-form" class="row">
+        <span class="field name-field">
+          <span class="mono name-prefix" aria-hidden="true">LED_BLE_</span>
+          <input id="settings-name" type="text" maxlength="18" spellcheck="false" autocomplete="off"
+                 autocapitalize="off" aria-describedby="settings-name-hint" disabled>
+        </span>
+        <button id="settings-name-save" type="submit" class="primary" disabled>Rename</button>
+        <button id="settings-name-reset" type="button" disabled>Use the default</button>
+      </form>
+      <p id="settings-name-hint" class="hint" aria-live="polite"></p>
     </section>
 
     <section id="panel-firmware" class="board" role="tabpanel" aria-labelledby="tab-firmware" hidden>

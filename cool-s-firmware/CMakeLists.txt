@@ -24,6 +24,7 @@ target_sources(app PRIVATE
   src/update_approval.c
   src/update_trial.c
   src/lua_anim.c
+  src/badge_settings.c
 )
 
 # Only decoding is needed, media_files.c writes its PNGs itself and has a
