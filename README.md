@@ -3,7 +3,7 @@
 For Assembly check the docs folder.
 TRIPPLE CHECK THE PRO MICRO ORIENTATION before soldering in place
 
-Always update the firmware to the latest [release](https://github.com/timonsku/Cool-S-Badge/releases). The web UI offers the upgrade by itself when a connected badge runs a different version.
+Always update the firmware to the latest [release](https://github.com/timonsku/Cool-S-Badge/releases). The [web UI](https://timonsku.github.io/Cool-S-Badge/) offers the upgrade by itself when a connected badge runs a different version.
 
 
 Web UI
