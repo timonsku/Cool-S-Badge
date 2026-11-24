@@ -21,6 +21,7 @@
     <div id="connection" class="connection">
       <span class="led" aria-hidden="true"></span>
       <span id="connection-label" aria-live="polite">Not connected</span>
+      <span class="battery" hidden></span>
       <button id="connect" type="button" class="primary connect-button" disabled>Connect</button>
     </div>
   </header>
@@ -32,6 +33,7 @@
       <div class="connection">
         <span class="led" aria-hidden="true"></span>
         <span class="connection-label">Not connected</span>
+        <span class="battery" hidden></span>
         <button type="button" class="primary connect-button" disabled>Connect</button>
       </div>
     </div>
@@ -41,10 +43,13 @@
     <p id="browser-warning" class="banner" hidden></p>
     <noscript><p class="banner">This page needs JavaScript.</p></noscript>
 
+    <!-- in place of the tabs when they do not fit, see main.js -->
+    <select id="main-tabs-menu" class="tabs-menu" aria-label="Section" hidden></select>
     <div id="main-tabs" class="tabs" role="tablist" aria-label="Sections">
       <button id="tab-media" type="button" role="tab" aria-selected="true" aria-controls="panel-media">Media</button>
       <button id="tab-draw" type="button" role="tab" aria-selected="false" aria-controls="panel-draw" tabindex="-1">Draw</button>
       <button id="tab-code" type="button" role="tab" aria-selected="false" aria-controls="panel-code" tabindex="-1">Code</button>
+      <button id="tab-console" type="button" role="tab" aria-selected="false" aria-controls="panel-console" tabindex="-1">Console</button>
       <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="panel-settings" tabindex="-1">Settings</button>
       <button id="tab-firmware" type="button" role="tab" aria-selected="false" aria-controls="panel-firmware" tabindex="-1">Firmware<span class="tab-long"> Update</span></button>
     </div>
@@ -198,6 +203,14 @@
       </div>
 
       <p id="code-status" class="status" role="status"></p>
+      <details id="code-console-box" class="console-box">
+        <summary>Badge output</summary>
+        <pre id="code-console" class="console" tabindex="0" aria-label="What the badge prints"></pre>
+        <div class="row">
+          <span class="hint console-status"></span>
+          <button id="code-console-clear" type="button">Clear</button>
+        </div>
+      </details>
       <div class="row">
         <button id="code-run" type="button" class="primary" disabled title="Ctrl+S">Upload and run</button>
         <button id="code-upload" type="button" disabled>Upload only</button>
@@ -208,6 +221,15 @@
         <span id="code-progress-label"></span>
         <progress id="code-progress-bar" max="1" value="0" aria-labelledby="code-progress-label"></progress>
       </div>
+    </section>
+
+    <section id="panel-console" class="board" role="tabpanel" aria-labelledby="tab-console" hidden>
+      <div class="row">
+        <span class="hint console-status"></span>
+        <button id="console-clear" type="button" disabled>Clear</button>
+        <button id="console-download" type="button" disabled>Download .txt</button>
+      </div>
+      <pre id="console-output" class="console console-large" tabindex="0" aria-label="What the badge prints"></pre>
     </section>
 
     <section id="panel-settings" class="board settings" role="tabpanel" aria-labelledby="tab-settings" hidden>

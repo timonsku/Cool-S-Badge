@@ -23,6 +23,8 @@
  *  10 write  {}                   {}  restart and erase all storage, settings included
  *  11 read   {}                   {brightness, boot, name, default, max}
  *  12 write  {brightness?, boot?, name?}  {}  any of them, see badge_settings.h
+ *  13 read   {}                   {usb, mv?, percent?}  the battery, see battery.h; mv and
+ *                                     percent only off USB, once there is a reading
  *
  * brightness is in percent, boot is the folder of the mode the badge starts
  * in, name is what follows "LED_BLE_" in its Bluetooth name, "" for default,
@@ -60,6 +62,7 @@
 #include "preview.h"
 #include "lua_anim.h"
 #include "badge_settings.h"
+#include "battery.h"
 
 #define MEDIA_GROUP_ID	MGMT_GROUP_ID_PERUSER
 #define MOUNT_POINT	"/lfs1"
@@ -501,6 +504,22 @@ static int media_settings_set(struct smp_streamer *ctxt)
 	return MGMT_ERR_EOK;
 }
 
+static int media_battery(struct smp_streamer *ctxt)
+{
+	zcbor_state_t *zse = ctxt->writer->zs;
+	struct battery_state battery;
+	bool ok;
+
+	battery_get(&battery);
+	ok = zcbor_tstr_put_lit(zse, "usb") && zcbor_bool_put(zse, battery.usb);
+	if (!battery.usb && battery.valid) {
+		ok = ok && zcbor_tstr_put_lit(zse, "mv") && zcbor_uint32_put(zse, battery.mv) &&
+		     zcbor_tstr_put_lit(zse, "percent") && zcbor_uint32_put(zse, battery.percent);
+	}
+
+	return MGMT_RETURN_CHECK(ok);
+}
+
 static const struct mgmt_handler media_handlers[] = {
 	{ .mh_read = media_info },
 	{ .mh_read = media_list },
@@ -515,6 +534,7 @@ static const struct mgmt_handler media_handlers[] = {
 	{ .mh_write = media_format },
 	{ .mh_read = media_settings },
 	{ .mh_write = media_settings_set },
+	{ .mh_read = media_battery },
 };
 
 static struct mgmt_group media_group = {

@@ -82,6 +82,24 @@ html { scroll-padding-top: 72px; }
 .tabs { display: flex; gap: 6px; padding-left: var(--chamfer); overflow-x: auto; }
 .tabs button { border-bottom: 0; border-radius: 6px 6px 0 0; background: transparent; font-weight: 600; }
 .tabs [aria-selected="true"] { background: var(--ink); color: var(--mask); }
+/* measured but not shown while the menu stands in for them */
+.tabs.collapsed { height: 0; overflow: hidden; visibility: hidden; }
+.tabs-menu {
+  display: block;
+  width: calc(100% - 2 * var(--chamfer));
+  min-height: 44px;
+  margin-left: var(--chamfer);
+  padding: 6px 12px;
+  border: 2px solid var(--ink);
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: var(--ink);
+  color: var(--mask);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tabs-menu option { background: var(--mask); color: var(--ink); }
 
 .subtabs { display: flex; }
 .subtabs button { min-width: 100px; border-radius: 0; }
@@ -496,3 +514,20 @@ dialog p { overflow-wrap: anywhere; }
 .name-field input::placeholder { color: var(--muted); }
 .name-field input[aria-invalid="true"] { border-color: var(--bad); }
 .hint.error { color: var(--bad); }
+
+/* battery next to the badge's name */
+.battery { padding: 1px 8px; border: 2px solid var(--ink); border-radius: 999px; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.battery.good { border-color: var(--good); color: var(--good); }
+.battery.low { border-color: #8a6100; color: #8a6100; }
+.battery.empty { border-color: var(--bad); color: var(--bad); }
+
+/* badge console output, in the Console tab and under the Code tab's editor */
+.console {
+  margin: 0; padding: 10px 12px; overflow: auto; height: 220px;
+  border: 2px solid var(--ink); border-radius: 4px; background: var(--ink); color: #d6dbe3;
+  font: 13px/1.45 ui-monospace, "Cascadia Code", Consolas, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.console-large { height: 60vh; height: 60svh; min-height: 260px; }
+.console-box { margin: 8px 0; }
+.console-box summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.console-status { margin: 0 auto 0 0; }

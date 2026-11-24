@@ -21,6 +21,8 @@ With "Live preview on badge", the badge shows the frame being drawn, and Play se
 
 The Code tab is an editor for LED animation scripts in Lua, see "Lua scripts" below: open an example, a script from the badge or a file, then "Upload and run" (Ctrl+S) shows it on the badge and points at the line of any error. The Media tab's Lua folder lists the scripts on the badge, with Edit to open one in the editor. Needs firmware v0.7+.
 
+The Console tab shows what the Zephyr log.
+
 "Download backup" saves every file on the badge as a .zip laid out as on its storage: `settings.cbor` (`settings.json` up to v0.7, which newer firmware ignores), `default.gif`, `default.png`, `default.lua`, `gif/`, `png/`, `lua/` and anything else there is (hidden temporary files are left out). "Restore backup" writes such a .zip back, for example after the storage was erased. Files on the badge with other names are kept.
 
 A zip of the unpacked backup folder, made with the operating system's own tools, also restores. Restart the badge afterwards to load restored settings. Firmware older than v0.7 can only back up and restore the files named above in the root and in the `gif` and `png` folders.
@@ -89,6 +91,7 @@ Applies to firmware newer than v0.6.
 - Top right / top left: next / previous mode: static picture, GIF, Lua script. Modes without any files are skipped.
 - Bottom right / bottom left: next / previous file of that kind. The badge goes through its default (default.png, default.gif or default.lua) and the files in the png, gif or lua folder the web UI manages.
 - Hold the bottom two for 3 seconds: the file that is showing becomes the new default. The LEDs flash white to confirm.
+- Press the top two together and let go at once: the LEDs show the battery percentage for 3 seconds, all 30 LEDs from 95 % and fewer below, green from 60 %, yellow from 30 %, red below. All blue means USB power: the badge reads its battery from its supply voltage, so there is no reading while it is plugged in. Holding them for a second turns the badge off instead. The web UI shows the battery next to the badge's name.
 - Hold all four for 10 seconds: restart into USB recovery.
 - Live drawings from the iPixel app are saved as default.png. Older firmware kept them in default.dat, the first start on the new firmware converts that file.
 

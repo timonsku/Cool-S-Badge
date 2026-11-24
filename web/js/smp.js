@@ -8,6 +8,8 @@ const NAME_PREFIX = 'LED_BLE_';
 // the iPixel app's service 0x00fa, which the Draw tab's live preview uses.
 // UUIDs are written out in full: Bluefy on iOS cannot parse the numeric short form.
 export const IPIXEL_SERVICE = '000000fa-0000-1000-8000-00805f9b34fb';
+// Nordic UART Service, the badge's console output (cool-s-firmware/src/nus_console.c)
+export const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 
 const HEADER_SIZE = 8;
 const VERSION_2 = 1 << 3;
@@ -99,7 +101,7 @@ export class SmpClient extends EventTarget {
   async choose() {
     const device = await navigator.bluetooth.requestDevice({
       filters: [{ namePrefix: NAME_PREFIX }],
-      optionalServices: [SERVICE, IPIXEL_SERVICE],
+      optionalServices: [SERVICE, IPIXEL_SERVICE, NUS_SERVICE],
     });
 
     if (device !== this.device) {

@@ -1,9 +1,11 @@
 import { app } from './app.js';
-import { $, notify, setupTabs } from './dom.js';
+import { $, el, notify, setupTabs } from './dom.js';
 import { setupMedia, refreshMedia, resetMedia } from './media.js';
 import { setupDraw, leaveDraw } from './draw.js';
 import { setupCode } from './code.js';
 import { setupSettings, loadSettings, resetSettings } from './settings.js';
+import { setupBattery } from './battery.js';
+import { setupConsole, connectConsole } from './console.js';
 import { setupUpdate, isUpdating, stopWaiting, loadFirmwareState, checkUpdateResult } from './update.js';
 
 let connecting = false;
@@ -22,24 +24,48 @@ const updateMedia = setupMedia();
 const showDraw = setupDraw();
 const showCode = setupCode();
 const showSettings = setupSettings();
+setupBattery();
+const showConsole = setupConsole();
 // after an update the badge restarts, and comes back with the new firmware's features
 setupUpdate(async () => {
   await loadMedia();
   await loadSettings();
+  await connectConsole();
 });
 
 const selectMainTab = setupTabs($('#main-tabs'), (tab) => {
+  $('#main-tabs-menu').value = tab.id;
   if (tab.id === 'tab-media') updateMedia();
   // the editor polls the badge in the background, once the previews have stopped
   else {
     app.stopBackground().then(() => {
       if (tab.id === 'tab-code') showCode();
       if (tab.id === 'tab-settings') showSettings();
+      if (tab.id === 'tab-console') showConsole();
     });
   }
   if (tab.id === 'tab-draw') showDraw();
   else leaveDraw();
 });
+// A menu instead of the tabs when they do not fit side by side. The tabs keep their
+// place in the layout, hidden, so their width still tells when they fit again.
+function setupTabsMenu(tablist, menu) {
+  for (const tab of tablist.querySelectorAll('[role="tab"]')) {
+    menu.append(el('option', { value: tab.id, textContent: tab.textContent }));
+    if (tab.getAttribute('aria-selected') === 'true') menu.value = tab.id;
+  }
+  menu.addEventListener('change', () => selectMainTab(document.getElementById(menu.value)));
+
+  const fit = () => {
+    const narrow = tablist.scrollWidth > tablist.clientWidth + 1;
+    tablist.classList.toggle('collapsed', narrow);
+    tablist.inert = narrow;
+    menu.hidden = !narrow;
+  };
+  new ResizeObserver(fit).observe(tablist);
+}
+setupTabsMenu($('#main-tabs'), $('#main-tabs-menu'));
+
 $('#go-firmware').addEventListener('click', () => {
   selectMainTab($('#tab-firmware'));
   $('#tab-firmware').focus();
@@ -67,6 +93,7 @@ async function connect() {
       await loadFirmwareState();
       await loadMedia();
       await loadSettings();
+      await connectConsole();
       if (!app.smp.connected) return;
       app.ready = true;
       await checkUpdateResult();

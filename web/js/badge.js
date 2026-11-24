@@ -7,7 +7,7 @@ const GROUP = { OS: 0, IMAGE: 1, STAT: 2, FS: 8, MEDIA: 64 };
 const OS = { RESET: 5 };
 const IMAGE = { STATE: 0, UPLOAD: 1 };
 const FS = { FILE: 0, CLOSE: 4 };
-const MEDIA = { INFO: 0, LIST: 1, PREPARE: 2, COMMIT: 3, DELETE: 4, PREVIEW: 5, WALK: 6, PUT: 7, RUN: 8, SCRIPT: 9, FORMAT: 10, SETTINGS: 11, SET_SETTINGS: 12 }; // cool-s-firmware/src/media_mgmt.c
+const MEDIA = { INFO: 0, LIST: 1, PREPARE: 2, COMMIT: 3, DELETE: 4, PREVIEW: 5, WALK: 6, PUT: 7, RUN: 8, SCRIPT: 9, FORMAT: 10, SETTINGS: 11, SET_SETTINGS: 12, BATTERY: 13 }; // cool-s-firmware/src/media_mgmt.c
 
 const MOUNT = '/lfs1';
 
@@ -83,6 +83,16 @@ export class Badge {
   // works with any firmware, the oldest ones through the iPixel packet
   setBrightness(percent, legacy) {
     return legacy ? this.#ipixelBrightness(percent) : this.setSettings({ brightness: percent });
+  }
+
+  // { usb, mv?, percent? }, null if the firmware cannot tell
+  async battery() {
+    try {
+      return await this.smp.request(READ, GROUP.MEDIA, MEDIA.BATTERY);
+    } catch (error) {
+      if (error instanceof SmpError && error.group === null && error.rc === RC.NOT_SUPPORTED) return null;
+      throw error;
+    }
   }
 
   async firmwareInfo() {

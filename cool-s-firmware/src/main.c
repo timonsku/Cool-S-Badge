@@ -52,6 +52,7 @@
 #include "preview.h"
 #include "lua_anim.h"
 #include "badge_settings.h"
+#include "battery.h"
 
 #ifdef CONFIG_MCUMGR_GRP_STAT
 #include <zephyr/mgmt/mcumgr/grp/stat_mgmt/stat_mgmt.h>
@@ -213,6 +214,7 @@ enum {
 	REQUEST_PREVIEW_PLAY = BIT(4),
 	REQUEST_PREVIEW_END = BIT(5),
 	REQUEST_RENDER = BIT(8),
+	REQUEST_SHOW_BATTERY = BIT(9),
 };
 static atomic_t requests;
 
@@ -221,6 +223,11 @@ static volatile int selected;
 
 #define SET_DEFAULT_HOLD_MS 3000
 #define POWER_OFF_HOLD_MS 1000
+#define BATTERY_SHOW_MS 3000
+/* for the battery voltage to recover once the LEDs are off, before it is read */
+#define BATTERY_SETTLE_MS 100
+/* while the LEDs show the battery, nothing else is drawn; 0 when they do not */
+static volatile int64_t battery_shown_until;
 static bool                   notify_enabled;
 static struct k_work adv_work;
 	
@@ -350,7 +357,7 @@ static ssize_t iPixel_write(struct bt_conn *conn,
 
 	LOG_INF("\nNew packet of length: %u", len);
 	
-	if(len < 500){
+	if(len < 70){
 		LOG_HEXDUMP_INF(buf, len, "data:");
 	}
 	LOG_INF("Offset: %u", offset);
@@ -481,7 +488,7 @@ void imageCommand(const void *buf, uint16_t len)
 			unsigned char bytes2[] = {0x5, 0x0, 0x3, 0x0, 0x3};
 			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes2, sizeof(bytes2));
 
-			LOG_HEXDUMP_DBG(data,len,"Raw GIF packet");
+			// LOG_HEXDUMP_DBG(data,len,"Raw GIF packet");
 			if (save_gif_to_file(DEFAULT_GIF_PATH, &data[15], len - 15) == 0) {
 				// only the main loop may open or close the decoder it is playing from
 				selected = 0;
@@ -545,6 +552,10 @@ struct led_rgb set_brightness(struct led_rgb color, float brightness) {
 void render(){
 	// nothing may paint over, or imitate, the upload prompt
 	if(update_approval_waiting()){
+		return;
+	}
+	// drawn again once the battery gauge is gone
+	if(battery_shown_until){
 		return;
 	}
 	// check if if all black and turn off power if so
@@ -1021,6 +1032,28 @@ static int button_index(uint16_t code)
 	}
 }
 
+// Both top buttons pressed, then let go before they would turn the badge off.
+// Called before button_held changes.
+static void check_battery_combo(int index, bool pressed, bool consumed)
+{
+	static int64_t since;
+	bool top = index == BUTTON_TOP_RIGHT || index == BUTTON_TOP_LEFT;
+	int other = index == BUTTON_TOP_RIGHT ? BUTTON_TOP_LEFT : BUTTON_TOP_RIGHT;
+
+	if (consumed) {
+		since = 0;
+	} else if (pressed) {
+		// a bottom button as well makes it another combination
+		bool alone = !button_held[BUTTON_BOTTOM_RIGHT] && !button_held[BUTTON_BOTTOM_LEFT];
+		since = top && alone && button_held[other] ? k_uptime_get() : 0;
+	} else if (since && top) {
+		if (k_uptime_get() - since < POWER_OFF_HOLD_MS) {
+			atomic_or(&requests, REQUEST_SHOW_BATTERY);
+		}
+		since = 0;
+	}
+}
+
 static void input_event_callback(struct input_event *evt, void *user_data)
 {
 	int index = button_index(evt->code);
@@ -1030,6 +1063,7 @@ static void input_event_callback(struct input_event *evt, void *user_data)
 	}
 	// presses that answer the upload prompt must not also act on the display
 	bool consumed = update_approval_button(index, evt->value);
+	check_battery_combo(index, evt->value, consumed);
 	LOG_INF("Button %d %s", index, evt->value ? "pressed" : "released");
 
 	if (evt->value) {
@@ -1105,9 +1139,51 @@ void display_upload_prompt()
 	}
 }
 
+// LEDs along the chain for the charge, green from 60 %, yellow from 30 %, red below.
+// All blue on USB power, where there is no reading. Fixed level, as the brightness can be zero.
+static void display_battery(void)
+{
+	struct battery_state battery;
+	struct led_rgb color = {.r = 0, .g = 0, .b = 64};
+	int lit = STRIP_NUM_PIXELS;
+
+	// measured with the LEDs off, as their current pulls the voltage down
+	if(regulator_is_enabled(led_en)) {
+		regulator_disable(led_en);
+	}
+	k_sleep(K_MSEC(BATTERY_SETTLE_MS));
+	battery_update(true);
+	battery_get(&battery);
+	if (!battery.usb && battery.valid) {
+		// a full chain from 95 %, as a charged battery soon reads a little below 100 %
+		lit = battery.percent >= 95 ? STRIP_NUM_PIXELS :
+		      MAX(1, DIV_ROUND_UP(battery.percent * (STRIP_NUM_PIXELS - 1), 95));
+		if (battery.percent >= 60) {
+			color = (struct led_rgb){.r = 0, .g = 96, .b = 0};
+		} else if (battery.percent >= 30) {
+			color = (struct led_rgb){.r = 96, .g = 72, .b = 0};
+		} else {
+			color = (struct led_rgb){.r = 96, .g = 0, .b = 0};
+		}
+		LOG_INF("Battery %u mV, %u%%", battery.mv, battery.percent);
+	} else {
+		LOG_INF("On USB power, no battery reading");
+	}
+
+	if(!regulator_is_enabled(led_en)) {
+		regulator_enable(led_en);
+		k_sleep(K_MSEC(100));
+	}
+	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
+		pixels[i] = i < lit ? color : (struct led_rgb){0};
+	}
+	led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+	battery_shown_until = k_uptime_get() + BATTERY_SHOW_MS;
+}
+
 void display_flash_white()
 {
-	// confirms a button action; fixed level, as the brightness setting can be zero
+	// confirms a button action
 	if(!regulator_is_enabled(led_en)) {
 		regulator_enable(led_en);
 		k_sleep(K_USEC(500));
@@ -1276,6 +1352,9 @@ static void migrate_legacy_default(void)
 static void handle_requests(void)
 {
 	atomic_val_t r = atomic_clear(&requests);
+	if (r & REQUEST_SHOW_BATTERY) {
+		display_battery();
+	}
 	if (r & REQUEST_RENDER) {
 		render();
 	}
@@ -1355,6 +1434,8 @@ int main(void)
 		return 0;
 	}
 	bt_gatt_cb_register(&gatt_callbacks);
+	// not needed to start, so a failure is only logged
+	battery_init();
 	mgmt_callback_register(&smp_command_callback);
 
 	LOG_INF("Bluetooth initialized\n");
@@ -1400,6 +1481,10 @@ int main(void)
 				render();
 			}
 			handle_requests();
+			if(battery_shown_until && k_uptime_get() >= battery_shown_until) {
+				battery_shown_until = 0;
+				render();
+			}
 			display_state_process();
 			if(current_kind() != MEDIA_LUA) {
 				// left Lua mode, through a button, an upload, live drawing or a preview
