@@ -17,7 +17,12 @@ export const WRITE = 2;
 const MIN_FRAGMENT = 20;
 const MAX_FRAGMENT = 512;
 const CONNECT_TIMEOUT = 20000;
+const CONNECT_ATTEMPTS = 3;
+const RETRY_DELAY = 1000;
 const REQUEST_TIMEOUT = 10000;
+// with header and CBOR framing, the echo response of this text is 494 bytes
+const PROBE_LENGTH = 480;
+const NO_RESPONSE = 'The badge stopped responding. Connect again to retry.';
 
 export const RC = { NO_MEMORY: 2, INVALID: 3, NOT_FOUND: 5, BAD_STATE: 6, NOT_SUPPORTED: 8, BUSY: 10, ACCESS_DENIED: 11 };
 
@@ -62,7 +67,7 @@ function withTimeout(promise, ms, message, onTimeout) {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      reject(new Error(message));
+      reject(new Error(typeof message === 'function' ? message() : message));
       onTimeout();
     }, ms);
   });
@@ -81,6 +86,8 @@ export class SmpClient extends EventTarget {
   #pending = null;
   #received = new Uint8Array(0);
   #firstNotification = 0;
+  // sizes of the notifications for the current request, reported when it times out
+  #chunks = [];
 
   async choose() {
     const device = await navigator.bluetooth.requestDevice({
@@ -101,15 +108,32 @@ export class SmpClient extends EventTarget {
   async connect() {
     const { gatt } = this.device;
     try {
-      await withTimeout(
-        this.#open(gatt), CONNECT_TIMEOUT, 'Connecting to the badge timed out.', () => gatt.disconnect(),
-      );
+      // Android often fails the first connection or service discovery (GATT status 133)
+      // and succeeds when asked again.
+      for (let attempt = 1; ; attempt++) {
+        let timedOut = false;
+        try {
+          await withTimeout(
+            this.#open(gatt), CONNECT_TIMEOUT, 'Connecting to the badge timed out.',
+            () => { timedOut = true; gatt.disconnect(); },
+          );
+          break;
+        } catch (error) {
+          if (timedOut || attempt >= CONNECT_ATTEMPTS) throw error;
+          if (gatt.connected) gatt.disconnect();
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY * attempt));
+        }
+      }
       await this.#negotiate();
       if (!this.#characteristic) throw new Error('The connection was lost while connecting.');
     } catch (error) {
       this.disconnect();
       if (error.name === 'NotFoundError') {
         throw new Error('This device has no firmware management service, so it is probably not a Cool-S badge.');
+      }
+      if (error.name === 'NetworkError') {
+        throw new Error(`Could not connect to the badge (${error.message}). ` +
+          'Make sure no other app is connected to it, then try again.');
       }
       throw error;
     }
@@ -140,8 +164,11 @@ export class SmpClient extends EventTarget {
       if (!(error instanceof SmpError)) throw error;
     }
 
-    if (this.bufferSize < 700) return; // no room for the probe
-    await this.request(WRITE, 0, 0, { d: '-'.repeat(600) });
+    // The echo comes back in one notification as long as the MTU allows, so its size is
+    // min(echo, MTU - 3). It stays under 512 bytes, the largest attribute value: Android drops
+    // longer notifications, which firmware up to v0.7 sends with an MTU of 517.
+    if (this.bufferSize < 600) return; // no room for the probe
+    await this.request(WRITE, 0, 0, { d: '-'.repeat(PROBE_LENGTH) });
     this.fragmentSize = Math.min(MAX_FRAGMENT, Math.max(MIN_FRAGMENT, this.#firstNotification));
   }
 
@@ -184,6 +211,7 @@ export class SmpClient extends EventTarget {
 
     this.#received = new Uint8Array(0);
     this.#firstNotification = 0;
+    this.#chunks = [];
     const response = new Promise((resolve, reject) => {
       this.#pending = { sequence, group, id, resolve, reject };
     });
@@ -203,7 +231,9 @@ export class SmpClient extends EventTarget {
       // A lost fragment leaves the badge waiting for the rest of the packet, and it
       // only forgets that on disconnect. So a failure here ends the connection.
       const [, result] = await withTimeout(
-        Promise.all([send(), response]), timeout, 'The badge stopped responding. Connect again to retry.',
+        Promise.all([send(), response]), timeout,
+        () => `${NO_RESPONSE} (Request ${group}/${id}, ${packet.length} bytes. ` +
+          `Received ${this.#chunks.length} notifications: ${this.#chunks.join(', ') || 'none'}.)`,
         () => this.disconnect(),
       );
       if (result.err) throw new SmpError(result.err.rc, result.err.group);
@@ -219,6 +249,10 @@ export class SmpClient extends EventTarget {
     const { buffer, byteOffset, byteLength } = target.value;
     const chunk = new Uint8Array(buffer, byteOffset, byteLength);
     this.#firstNotification ||= byteLength;
+    // the length, and for a chunk that starts a packet, the length its header announces
+    this.#chunks.push(this.#received.length === 0 && byteLength >= HEADER_SIZE
+      ? `${byteLength}[${HEADER_SIZE + new DataView(buffer, byteOffset, byteLength).getUint16(2)}]`
+      : String(byteLength));
 
     const data = new Uint8Array(this.#received.length + byteLength);
     data.set(this.#received);

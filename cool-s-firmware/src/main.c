@@ -58,6 +58,8 @@
 #endif
 
 #include <zephyr/mgmt/mcumgr/transport/smp_bt.h>
+#include <zephyr/mgmt/mcumgr/mgmt/mgmt_defines.h>
+#include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
 #include <zephyr/dfu/mcuboot.h>
 
 #include <zephyr/data/json.h>
@@ -964,6 +966,40 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	LOG_INF("Disconnected, reason 0x%02x %s\n", reason, bt_hci_err_to_str(reason));
 }
 
+static void le_param_updated(struct bt_conn *conn, uint16_t interval, uint16_t latency, uint16_t timeout)
+{
+	LOG_INF("Connection parameters: interval %u.%02u ms, latency %u, timeout %u ms",
+		interval * 5 / 4, (interval * 125) % 100, latency, timeout * 10);
+}
+
+static void att_mtu_updated(struct bt_conn *conn, uint16_t tx, uint16_t rx)
+{
+	LOG_INF("ATT MTU: tx %u, rx %u", tx, rx);
+}
+
+static struct bt_gatt_cb gatt_callbacks = {
+	.att_mtu_updated = att_mtu_updated,
+};
+
+// Shows that SMP requests reach the badge. Only the OS group, which every tool starts with,
+// so file and image uploads do not flood the log.
+static enum mgmt_cb_return on_smp_command(uint32_t event, enum mgmt_cb_return prev_status,
+					  int32_t *rc, uint16_t *group, bool *abort_more,
+					  void *data, size_t data_size)
+{
+	const struct mgmt_evt_op_cmd_arg *cmd = data;
+
+	if (cmd->group == MGMT_GROUP_ID_OS) {
+		LOG_INF("SMP request: group %u, id %u, op %u", cmd->group, cmd->id, cmd->op);
+	}
+	return MGMT_CB_OK;
+}
+
+static struct mgmt_callback smp_command_callback = {
+	.callback = on_smp_command,
+	.event_id = MGMT_EVT_OP_CMD_RECV,
+};
+
 static void recycled_cb(void)
 {
 	LOG_INF("Connection object available from previous conn. Disconnect is complete!\n");
@@ -975,6 +1011,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected        = connected,
 	.disconnected     = disconnected,
 	.recycled         = recycled_cb,
+	.le_param_updated = le_param_updated,
 #ifdef CONFIG_BT_LBS_SECURITY_ENABLED
 	.security_changed = security_changed,
 #endif
@@ -1394,6 +1431,8 @@ int main(void)
 		update_trial_failed();
 		return 0;
 	}
+	bt_gatt_cb_register(&gatt_callbacks);
+	mgmt_callback_register(&smp_command_callback);
 
 	LOG_INF("Bluetooth initialized\n");
 
