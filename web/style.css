@@ -279,8 +279,11 @@ dialog p { overflow-wrap: anywhere; }
   background: radial-gradient(circle at 50% 45%, #6b727e, #464b54 80%);
 }
 .stage canvas, .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.stage svg { touch-action: none; user-select: none; -webkit-user-select: none; }
+/* the page scrolls over the stage, only the badge itself takes strokes */
+.stage svg { touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.badge-area { fill: transparent; cursor: crosshair; touch-action: none; }
 .led-cell {
+  touch-action: none;
   fill: var(--paint);
   fill-opacity: 0;
   stroke: rgb(21 23 28 / 40%);

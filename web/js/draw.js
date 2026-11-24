@@ -129,6 +129,12 @@ function buildStage() {
   const svg = $('#draw-leds');
   svg.setAttribute('viewBox', `${VIEW.x} ${VIEW.y} ${VIEW.width} ${VIEW.height}`);
 
+  // the badge's outline: a stroke can start anywhere on it, around it the page scrolls
+  const area = document.createElementNS(SVG_NS, 'path');
+  area.setAttribute('class', 'badge-area');
+  area.setAttribute('d', OUTER);
+  svg.append(area);
+
   LEDS.forEach(([x, y], i) => {
     const cell = document.createElementNS(SVG_NS, 'rect');
     cell.setAttribute('class', 'led-cell');
@@ -144,13 +150,19 @@ function buildStage() {
     cells.push(cell);
   });
 
+  // Touches on the badge draw, touches beside it scroll the page. touch-action on the badge
+  // says the same, but not every browser honours it on SVG shapes.
+  svg.addEventListener('touchstart', (event) => {
+    if (onBadge(event.target)) event.preventDefault();
+  }, { passive: false });
+
   svg.addEventListener('pointerdown', (event) => {
+    if (!onBadge(event.target) || event.button !== 0) return;
     const index = cellAt(event.clientX, event.clientY);
-    if (index === null || event.button !== 0) return;
     event.preventDefault();
-    focusCell(index);
+    if (index !== null) focusCell(index);
     if (event.altKey) {
-      pickColor(index);
+      if (index !== null) pickColor(index);
       return;
     }
     stop();
@@ -158,7 +170,7 @@ function buildStage() {
     painting = true;
     strokeChanged = false;
     svg.setPointerCapture(event.pointerId);
-    paint(index);
+    if (index !== null) paint(index);
   });
   svg.addEventListener('pointermove', (event) => {
     if (!painting) return;
@@ -193,6 +205,8 @@ function buildStage() {
 
   new ResizeObserver(queueRender).observe($('#draw-stage'));
 }
+
+const onBadge = (target) => Boolean(target?.closest?.('.led-cell, .badge-area'));
 
 function cellAt(x, y) {
   const target = document.elementFromPoint(x, y);
