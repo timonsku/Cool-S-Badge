@@ -58,15 +58,20 @@ const formatDate = (iso) => new Date(iso).toLocaleDateString(undefined, { dateSt
 
 function updateRemote() {
   const release = manifest?.release;
-  const offer = Boolean(app.ready && release && app.version !== release.version);
-  const newer = offer && (!app.version || compareVersions(release.version, app.version) > 0);
-  $('#fw-upgrade').hidden = !offer;
-  if (offer) {
+  // the button stays, also to reinstall the release over a development build of the same version
+  const current = Boolean(app.ready && release && app.version === release.version);
+  const newer = Boolean(app.ready && release && !current &&
+    (!app.version || compareVersions(release.version, app.version) > 0));
+  $('#fw-upgrade').hidden = !release;
+  if (release) {
     const running = app.version ? `This badge runs v${app.version}.` : 'This badge runs older firmware.';
-    $('#fw-upgrade-text').textContent = newer
-      ? `Firmware v${release.version} is available, released ${formatDate(release.date)}. ${running}`
-      : `The latest release is v${release.version}. ${running}`;
+    let text = `The latest release is v${release.version}, released ${formatDate(release.date)}.`;
+    if (current) text = `This badge runs the latest release, v${release.version}.`;
+    else if (newer) text = `Firmware v${release.version} is available, released ${formatDate(release.date)}. ${running}`;
+    else if (app.ready) text = `The latest release is v${release.version}. ${running}`;
+    $('#fw-upgrade-text').textContent = text;
     $('#fw-upgrade-install').textContent = newer ? `Upgrade to v${release.version}` : `Install v${release.version}`;
+    $('#fw-upgrade-install').classList.toggle('primary', newer);
     $('#fw-upgrade-notes').href = release.url;
   }
   $('#fw-upgrade-install').disabled = !app.ready || app.busy || downloading;
