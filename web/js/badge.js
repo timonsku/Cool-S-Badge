@@ -1,7 +1,7 @@
 // The commands this UI needs, on top of SmpClient.
 
 import { encode } from './cbor.js';
-import { READ, WRITE, RC, SmpError, IPIXEL_SERVICE } from './smp.js';
+import { READ, WRITE, RC, SmpError, IPIXEL_SERVICE, writeWithResponse } from './smp.js';
 
 const GROUP = { OS: 0, IMAGE: 1, STAT: 2, FS: 8, MEDIA: 64 };
 const OS = { RESET: 5 };
@@ -24,7 +24,7 @@ const ACTIVATE_TIMEOUT = 45000;
 // what boot_set_next's refusal in update_approval.c turns into
 const IMAGE_ERR_UNKNOWN = 1;
 const MAX_DOWNLOAD = 1024 * 1024;
-const IPIXEL_WRITE = 0xfa02;
+const IPIXEL_WRITE = '0000fa02-0000-1000-8000-00805f9b34fb';
 // cool-s-firmware/src/preview.h
 export const PREVIEW_MAX = 16 * 1024;
 
@@ -46,7 +46,7 @@ export class Badge {
     }
     const packet = Uint8Array.of(10, 0, 5, 1, 0, color >> 16, color >> 8, color, index, 0);
     // with a response, so nothing is dropped and writes cannot pile up
-    await this.#pixelWriter.writeValueWithResponse(packet);
+    await writeWithResponse(this.#pixelWriter, packet);
   }
 
   async firmwareInfo() {

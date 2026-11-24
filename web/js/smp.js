@@ -5,8 +5,9 @@ import { encode, decode } from './cbor.js';
 const SERVICE = '8d53dc1d-1db7-4cd3-868b-8a527460aa84';
 const CHARACTERISTIC = 'da2e7828-fbce-4e01-ae9e-261174997c48';
 const NAME_PREFIX = 'LED_BLE_';
-// the iPixel app's service, which the Draw tab's live preview uses (cool-s-firmware/src/main.c)
-export const IPIXEL_SERVICE = 0x00fa;
+// the iPixel app's service 0x00fa, which the Draw tab's live preview uses.
+// UUIDs are written out in full: Bluefy on iOS cannot parse the numeric short form.
+export const IPIXEL_SERVICE = '000000fa-0000-1000-8000-00805f9b34fb';
 
 const HEADER_SIZE = 8;
 const VERSION_2 = 1 << 3;
@@ -62,6 +63,12 @@ export class SmpError extends Error {
     this.group = group;
   }
 }
+
+// Some browsers, possibly Bluefy, only have writeValue, which picks the write type itself.
+export const writeWithoutResponse = (characteristic, data) => (characteristic.writeValueWithoutResponse
+  ? characteristic.writeValueWithoutResponse(data) : characteristic.writeValue(data));
+export const writeWithResponse = (characteristic, data) => (characteristic.writeValueWithResponse
+  ? characteristic.writeValueWithResponse(data) : characteristic.writeValue(data));
 
 function withTimeout(promise, ms, message, onTimeout) {
   let timer;
@@ -219,7 +226,7 @@ export class SmpClient extends EventTarget {
     const send = async () => {
       try {
         for (let at = 0; at < packet.length; at += this.fragmentSize) {
-          await characteristic.writeValueWithoutResponse(packet.slice(at, at + this.fragmentSize));
+          await writeWithoutResponse(characteristic, packet.slice(at, at + this.fragmentSize));
         }
       } catch (error) {
         this.disconnect();

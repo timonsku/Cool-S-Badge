@@ -39,7 +39,10 @@ async function connect() {
     await app.smp.choose();
   } catch (error) {
     // NotFoundError is also what closing the device picker gives
-    if (error.name !== 'NotFoundError') notify(error.message, 'error');
+    if (error?.name === 'NotFoundError') return;
+    // Bluefy on iOS can reject with a plain value instead of an Error
+    const reason = error?.message || (typeof error === 'string' ? error : JSON.stringify(error));
+    notify(`Could not open the Bluetooth device picker: ${reason ?? 'no reason given'}`, 'error');
     return;
   }
 
