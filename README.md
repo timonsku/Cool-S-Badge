@@ -12,7 +12,7 @@ https://timonsku.github.io/Cool-S-Badge/ manages GIF, PNG and Lua files on the b
 Needs Chrome or Edge (Windows, macOS, Android, ChromeOS) or Bluefy on iOS (https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055). Close the iPixel app first, the badge takes one connection at a time.
 The Media tab needs firmware v0.7+.
 
-The badge shows uploaded files with its buttons, see "Buttons" below. It needs firmware newer than v0.6 for that.
+The badge switches through uploaded files with its lower buttons, see "Buttons" below. It needs firmware newer than v0.6 for that.
 The LEDs show the first 30 pixels of an image, row by row. PNGs over 1024 pixels or 16 KB are not shown.
 
 The Draw tab paints pictures and animations on a model of the badge. One frame uploads as a 30×1 PNG, more frames as a 30×1 GIF. The drawing is kept in the browser between visits.
@@ -89,11 +89,12 @@ Buttons
 ----------------
 Applies to firmware newer than v0.6.
 - Top right / top left: next / previous mode: static picture, GIF, Lua script. Modes without any files are skipped.
-- Bottom right / bottom left: next / previous file of that kind. The badge goes through its default (default.png, default.gif or default.lua) and the files in the png, gif or lua folder the web UI manages.
-- Hold the bottom two for 3 seconds: the file that is showing becomes the new default. The LEDs flash white to confirm.
+- Bottom right / bottom left: next / previous file of that kind. The badge goes through its default and the files in the png, gif or lua folder the web UI manages.
+- The default of each mode is the file `settings.cbor` names (`default_png`, `default_gif`, `default_lua`: a path such as `png/cat.png`). Without one, or when that file is gone, it is default.png, default.gif or default.lua in the root, and without that the first file in the folder. Renaming or deleting the file through the web UI keeps the setting pointing at it or clears it.
+- Hold the bottom two for 3 seconds: the file that is showing becomes the new default. The LEDs flash white to confirm. Up to v0.8 this copied the file over default.png and so on; now it only changes the setting.
 - Press the top two together and let go at once: the LEDs show the battery percentage for 3 seconds, all 30 LEDs from 95 % and fewer below, green from 60 %, yellow from 30 %, red below. All blue means USB power: the badge reads its battery from its supply voltage, so there is no reading while it is plugged in. Holding them for a second turns the badge off instead. The web UI shows the battery next to the badge's name.
 - Hold all four for 10 seconds: restart into USB recovery.
-- Live drawings from the iPixel app are saved as default.png. Older firmware kept them in default.dat, the first start on the new firmware converts that file.
+- Live drawings and pictures from the iPixel app are saved as default.png, GIFs as default.gif, and become the default again. Older firmware kept drawings in default.dat, the first start on the new firmware converts that file.
 
 Development
 -----------------

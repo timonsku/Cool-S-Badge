@@ -3,6 +3,7 @@ import { $, el, notify, confirmDialog, setupTabs, touchScreen } from './dom.js';
 import { FORMATS, blocksFor, deviceName, uniqueName, formatBytes } from './formats.js';
 import { createZip, readZip } from './zip.js';
 import { editScript } from './code.js';
+import { setupBrowser, refreshBrowser, resetBrowser, updateBrowser } from './files.js';
 
 // Left free for littlefs copy-on-write and the settings the badge saves itself.
 const RESERVED_BLOCKS = 2;
@@ -14,7 +15,12 @@ const DEFAULTS = Object.keys(FORMATS).map((folder) => `default.${folder}`);
 const SETTINGS = ['settings.cbor', 'settings.json'];
 
 let dir = 'gif';
+// the All tab is showing instead of a folder
+let allShown = false;
 let storage; // undefined: not loaded, null: firmware without media management
+// The file each mode starts with, by folder: a path below the root, '' for default.<folder> in
+// the root. null for firmware that always uses the root files and has no file manager commands.
+let defaults;
 // by folder; null for a folder the firmware does not have, like lua before Lua scripts
 const noFiles = () => Object.fromEntries(Object.keys(FORMATS).map((folder) => [folder, []]));
 let files = noFiles();
@@ -38,19 +44,56 @@ function clearPreviews() {
 export function resetMedia() {
   clearPreviews();
   storage = undefined;
+  defaults = undefined;
   files = noFiles();
+  resetBrowser();
   render();
 }
 
 export async function refreshMedia() {
   const info = await app.badge.storage();
   const found = noFiles();
+  let set = null;
   if (info) {
     for (const folder of Object.keys(found)) found[folder] = await app.badge.list(folder);
+    const settings = await app.badge.settings();
+    if (settings && 'default_png' in settings) {
+      set = Object.fromEntries(Object.keys(FORMATS).map((folder) => [folder, settings[`default_${folder}`] ?? '']));
+      set.max = settings.path_max;
+    }
   }
   storage = info;
+  defaults = set;
   files = found;
   render();
+  if (allShown) await refreshBrowser();
+}
+
+// For the All tab.
+export const storageInfo = () => storage;
+export const fileManagerSupported = () => Boolean(defaults);
+
+// The path below the root of the file a mode starts with. Without a setting, or when the
+// badge cannot find it, that is default.<folder> in the root; the badge also copes with that missing.
+export function defaultFor(folder) {
+  return defaults?.[folder] || `default.${folder}`;
+}
+
+// The folder whose default path could be, or null if it cannot be a default.
+export function defaultKind(path) {
+  if (!defaults) return null;
+  const folder = Object.keys(FORMATS).find((name) => FORMATS[name].extension.test(path));
+  return folder && utf8.encode(path).length <= defaults.max ? folder : null;
+}
+
+// Makes the file at path (below the root) the one its mode starts with.
+export function makeDefault(folder, path) {
+  return app.run(async () => {
+    // the file in the root is what the badge uses without a setting
+    await app.badge.setSettings({ [`default_${folder}`]: path === `default.${folder}` ? '' : path });
+    await refreshMedia();
+    notify(`The badge now starts its ${FORMATS[folder].label} mode with ${path}.`, 'success');
+  });
 }
 
 function renderStorage() {
@@ -117,20 +160,29 @@ function renderFiles() {
       : null;
     open?.addEventListener('click', () => editScript(file.name));
 
+    const path = `${folder}/${file.name}`;
+    const isDefault = defaultFor(folder) === path;
+    const choose = defaultKind(path) === folder && !isDefault
+      ? el('button', { type: 'button', 'aria-label': `Make ${file.name} the default`, textContent: 'Make default' })
+      : null;
+    choose?.addEventListener('click', () => makeDefault(folder, path));
+
     const thumb = el('div', { className: 'thumb', hidden: !previewsOn });
     const dimensions = el('span', { className: 'dimensions' });
     const key = keyOf(folder, file.name);
-    cards.set(key, { thumb, dimensions, remove, open });
+    cards.set(key, { thumb, dimensions, buttons: [remove, open, choose].filter(Boolean) });
     if (previewsOn) updatePreview(key);
 
     const onFlash = blocksFor(file.size, storage.block) * storage.block;
+    const actions = [choose, open, remove].filter(Boolean);
     return el('li', { className: 'file' },
       thumb,
       el('div', { className: 'file-info' },
         el('strong', { title: file.name }, file.name),
+        ...(isDefault ? [el('span', { className: 'tag' }, 'Default')] : []),
         el('span', { title: `Takes ${formatBytes(onFlash)} of flash` }, formatBytes(file.size)),
         dimensions),
-      ...(open ? [el('div', { className: 'file-actions' }, open, remove)] : [remove]));
+      ...(actions.length > 1 ? [el('div', { className: 'file-actions' }, ...actions)] : actions));
   });
 
   $('#files').replaceChildren(...items);
@@ -149,6 +201,14 @@ function render() {
     ? `Tap to choose ${FORMATS[dir].label} files`
     : `Drop ${FORMATS[dir].label} files here, or click to choose`;
   $('#lua-help').hidden = dir !== 'lua';
+  $('#preview-switch').hidden = allShown;
+  const { label, noun } = FORMATS[dir];
+  const fromRoot = defaultFor(dir) === `default.${dir}`;
+  $('#folder-default').hidden = !defaults;
+  $('#folder-default').textContent = fromRoot
+    ? `The badge starts this mode with default.${dir} in the root of its storage, if there is one, ` +
+      `or else the first ${label} ${noun} here. "Make default" picks another.`
+    : `The badge starts this mode with /${defaultFor(dir)}, or with default.${dir} in the root if that is gone.`;
   update();
 }
 
@@ -166,10 +226,10 @@ function update() {
   $('#storage-erase').disabled = locked;
   $('#dropzone').classList.toggle('disabled', folderLocked);
   $('#refresh').disabled = !app.ready || app.busy;
-  for (const { remove, open } of cards.values()) {
-    remove.disabled = locked;
-    if (open) open.disabled = locked;
+  for (const { buttons } of cards.values()) {
+    for (const button of buttons) button.disabled = locked;
   }
+  updateBrowser();
 
   let emptyText = 'Not connected.';
   if (usable && files[dir] === null) {
@@ -180,11 +240,11 @@ function update() {
   $('#files-empty').textContent = emptyText;
   $('#files-empty').hidden = filesIn(dir).length > 0;
 
-  if (usable && previewsOn && !$('#panel-media').hidden) app.background(loadPreviews);
+  if (usable && previewsOn && !allShown && !$('#panel-media').hidden) app.background(loadPreviews);
 }
 
 async function loadPreviews(signal) {
-  while (!signal.aborted && app.ready && previewsOn && !$('#panel-media').hidden) {
+  while (!signal.aborted && app.ready && previewsOn && !allShown && !$('#panel-media').hidden) {
     // looked up every round, so switching tabs changes what loads next
     const folder = dir;
     const { label, noun, mime, inspect, script } = FORMATS[folder];
@@ -551,9 +611,14 @@ async function deleteFile(folder, name) {
 
 export function setupMedia() {
   setupTabs($('#media-tabs'), (tab) => {
-    dir = tab.dataset.dir;
+    allShown = tab.dataset.dir === 'all';
+    if (!allShown) dir = tab.dataset.dir;
     render();
+    if (allShown && app.ready && !app.busy) {
+      app.stopBackground().then(() => app.run(refreshBrowser));
+    }
   });
+  setupBrowser();
 
   $('#preview-toggle').addEventListener('change', async ({ target }) => {
     previewsOn = target.checked;

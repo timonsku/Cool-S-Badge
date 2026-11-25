@@ -21,19 +21,27 @@
  *   9 read   {}                   {running, path, error}  the last script started, error ""
  *                                     unless it failed
  *  10 write  {}                   {}  restart and erase all storage, settings included
- *  11 read   {}                   {brightness, boot, name, default, max}
- *  12 write  {brightness?, boot?, name?}  {}  any of them, see badge_settings.h
+ *  11 read   {}                   {brightness, boot, name, default, max,
+ *                                     default_png, default_gif, default_lua, path_max}
+ *  12 write  {brightness?, boot?, name?, default_png?, default_gif?, default_lua?}  {}
+ *                                     any of them, see badge_settings.h
  *  13 read   {}                   {usb, mv?, percent?}  the battery, see battery.h; mv and
  *                                     percent only off USB, once there is a reading
+ *  14 write  {path}               {}  create a folder
+ *  15 write  {path}               {}  delete a file, or a folder once it is empty
+ *  16 write  {from, to}           {}  rename or move a file or folder; to must not exist
  *
  * brightness is in percent, boot is the folder of the mode the badge starts
  * in, name is what follows "LED_BLE_" in its Bluetooth name, "" for default,
  * the name used then, and max the longest name. A new name is advertised
- * after the next disconnect.
+ * after the next disconnect. default_* is the file each mode starts with,
+ * as a path below the root ("png/cat.png") of at most path_max bytes, or ""
+ * for the file in the root (default.png and so on). The badge copes with it
+ * missing, and it follows the file through 4, 15 and 16.
  *
- * 6 and 7 take a full path such as "/lfs1/settings.cbor", for backups of the
- * whole file system. Names starting with "." (temporary files) are neither
- * listed nor accepted.
+ * 6, 7 and 14 to 16 take a full path such as "/lfs1/settings.cbor", for
+ * backups and for managing the whole file system. Names starting with "."
+ * (temporary files) are neither listed nor accepted.
  *
  * An upload is: 2, stock file upload to UPLOAD_PATH, 3 or 7. A file in a media
  * folder is therefore always complete, even if the connection drops.
@@ -88,6 +96,9 @@ static int to_mgmt_err(int rc)
 		return MGMT_ERR_ENOENT;
 	case -ENOSPC:
 		return MGMT_ERR_ENOMEM;
+	case -EEXIST:
+	case -ENOTEMPTY:
+		return MGMT_ERR_EBADSTATE;
 	default:
 		return MGMT_ERR_EUNKNOWN;
 	}
@@ -137,10 +148,37 @@ static int decode_req(struct smp_streamer *ctxt, struct media_req *req, bool wit
 	return MGMT_ERR_EOK;
 }
 
+/* A path at or below the mount point, without hidden or empty parts, into out. */
+static int check_path(const struct zcbor_string *path, char *out, size_t size, bool root_ok)
+{
+	const size_t mount_len = sizeof(MOUNT_POINT) - 1;
+
+	if (!path->value || path->len < mount_len || path->len >= size ||
+	    memcmp(path->value, MOUNT_POINT, mount_len) || memchr(path->value, '\0', path->len)) {
+		return MGMT_ERR_EINVAL;
+	}
+
+	memcpy(out, path->value, path->len);
+	out[path->len] = '\0';
+
+	if (path->len == mount_len) {
+		return root_ok ? MGMT_ERR_EOK : MGMT_ERR_EINVAL;
+	}
+	if (out[mount_len] != '/') {
+		return MGMT_ERR_EINVAL;
+	}
+	for (const char *s = &out[mount_len]; *s; s++) {
+		if (*s == '/' && (s[1] == '\0' || s[1] == '/' || s[1] == '.')) {
+			return MGMT_ERR_EINVAL;
+		}
+	}
+
+	return MGMT_ERR_EOK;
+}
+
 /* {path, skip/size}: a path at or below the mount point, without hidden or empty parts */
 static int decode_path_req(struct smp_streamer *ctxt, struct media_req *req, bool root_ok)
 {
-	const size_t mount_len = sizeof(MOUNT_POINT) - 1;
 	struct zcbor_string path = { 0 };
 	size_t decoded;
 
@@ -153,28 +191,41 @@ static int decode_path_req(struct smp_streamer *ctxt, struct media_req *req, boo
 	req->skip = 0;
 	req->size = UINT32_MAX;
 
-	if (zcbor_map_decode_bulk(ctxt->reader->zs, fields, ARRAY_SIZE(fields), &decoded) ||
-	    path.len < mount_len || path.len >= sizeof(req->path) ||
-	    memcmp(path.value, MOUNT_POINT, mount_len) || memchr(path.value, '\0', path.len)) {
+	if (zcbor_map_decode_bulk(ctxt->reader->zs, fields, ARRAY_SIZE(fields), &decoded)) {
 		return MGMT_ERR_EINVAL;
 	}
+	return check_path(&path, req->path, sizeof(req->path), root_ok);
+}
 
-	memcpy(req->path, path.value, path.len);
-	req->path[path.len] = '\0';
+/* the path below the mount point, as the settings name files */
+static const char *relative(const char *path)
+{
+	return &path[sizeof(MOUNT_POINT)];
+}
 
-	if (path.len == mount_len) {
-		return root_ok ? MGMT_ERR_EOK : MGMT_ERR_EINVAL;
+/*
+ * Moves from to to (a file or folder), the settings' defaults with it. A file
+ * that is playing is closed first. to NULL deletes from instead.
+ */
+static int move_path(const char *from, const char *to)
+{
+	display_files_lock(from);
+	int rc = to ? fs_rename(from, to) : fs_unlink(from);
+	display_files_unlock();
+	if (rc == 0) {
+		badge_settings_path_moved(relative(from), to ? relative(to) : NULL);
 	}
-	if (req->path[mount_len] != '/') {
-		return MGMT_ERR_EINVAL;
-	}
-	for (const char *s = &req->path[mount_len]; *s; s++) {
-		if (*s == '/' && (s[1] == '\0' || s[1] == '/' || s[1] == '.')) {
-			return MGMT_ERR_EINVAL;
-		}
-	}
+	return rc;
+}
 
-	return MGMT_ERR_EOK;
+/* replaces to with the finished upload */
+static int commit_upload(const char *to)
+{
+	/* a GIF playing from to would read the new file's blocks halfway */
+	display_files_lock(to);
+	int rc = fs_rename(UPLOAD_PATH, to);
+	display_files_unlock();
+	return rc;
 }
 
 static int media_info(struct smp_streamer *ctxt)
@@ -288,7 +339,7 @@ static int media_commit(struct smp_streamer *ctxt)
 		return MGMT_ERR_EBADSTATE;
 	}
 
-	return to_mgmt_err(fs_rename(UPLOAD_PATH, req.path));
+	return to_mgmt_err(commit_upload(req.path));
 }
 
 static int media_walk(struct smp_streamer *ctxt)
@@ -365,7 +416,13 @@ static int media_put(struct smp_streamer *ctxt)
 		}
 	}
 
-	return to_mgmt_err(fs_rename(UPLOAD_PATH, req.path));
+	/* a folder of that name stays */
+	rc = fs_stat(req.path, &entry);
+	if (rc == 0 && entry.type == FS_DIR_ENTRY_DIR) {
+		return MGMT_ERR_EBADSTATE;
+	}
+
+	return to_mgmt_err(commit_upload(req.path));
 }
 
 static int media_delete(struct smp_streamer *ctxt)
@@ -373,7 +430,60 @@ static int media_delete(struct smp_streamer *ctxt)
 	struct media_req req;
 	int rc = decode_req(ctxt, &req, true);
 
-	return rc ? rc : to_mgmt_err(fs_unlink(req.path));
+	return rc ? rc : to_mgmt_err(move_path(req.path, NULL));
+}
+
+static int media_mkdir(struct smp_streamer *ctxt)
+{
+	struct media_req req;
+	int rc = decode_path_req(ctxt, &req, false);
+
+	return rc ? rc : to_mgmt_err(fs_mkdir(req.path));
+}
+
+/* a file, or a folder once it is empty */
+static int media_remove(struct smp_streamer *ctxt)
+{
+	struct media_req req;
+	int rc = decode_path_req(ctxt, &req, false);
+
+	return rc ? rc : to_mgmt_err(move_path(req.path, NULL));
+}
+
+static int media_rename(struct smp_streamer *ctxt)
+{
+	struct zcbor_string from_str = { 0 };
+	struct zcbor_string to_str = { 0 };
+	char from[CONFIG_MCUMGR_GRP_FS_PATH_LEN + 1];
+	char to[CONFIG_MCUMGR_GRP_FS_PATH_LEN + 1];
+	size_t decoded;
+
+	struct zcbor_map_decode_key_val fields[] = {
+		ZCBOR_MAP_DECODE_KEY_DECODER("from", zcbor_tstr_decode, &from_str),
+		ZCBOR_MAP_DECODE_KEY_DECODER("to", zcbor_tstr_decode, &to_str),
+	};
+
+	if (zcbor_map_decode_bulk(ctxt->reader->zs, fields, ARRAY_SIZE(fields), &decoded) ||
+	    check_path(&from_str, from, sizeof(from), false) ||
+	    check_path(&to_str, to, sizeof(to), false)) {
+		return MGMT_ERR_EINVAL;
+	}
+
+	size_t from_len = strlen(from);
+	/* a folder into itself would cut it off from the rest */
+	if (strncmp(to, from, from_len) == 0 && (to[from_len] == '/' || to[from_len] == '\0')) {
+		return MGMT_ERR_EINVAL;
+	}
+	/* littlefs would replace a file there without asking */
+	int rc = fs_stat(to, &entry);
+	if (rc == 0) {
+		return MGMT_ERR_EBADSTATE;
+	}
+	if (rc != -ENOENT) {
+		return to_mgmt_err(rc);
+	}
+
+	return to_mgmt_err(move_path(from, to));
 }
 
 static int media_preview(struct smp_streamer *ctxt)
@@ -464,7 +574,14 @@ static int media_settings(struct smp_streamer *ctxt)
 	     zcbor_tstr_put_lit(zse, "boot") && zcbor_tstr_put_term(zse, badge_boot_dir(s.boot), 4) &&
 	     zcbor_tstr_put_lit(zse, "name") && zcbor_tstr_put_term(zse, s.name, sizeof(s.name)) &&
 	     zcbor_tstr_put_lit(zse, "default") && zcbor_tstr_put_term(zse, name, sizeof(name)) &&
-	     zcbor_tstr_put_lit(zse, "max") && zcbor_uint32_put(zse, BADGE_NAME_MAX);
+	     zcbor_tstr_put_lit(zse, "max") && zcbor_uint32_put(zse, BADGE_NAME_MAX) &&
+	     zcbor_tstr_put_lit(zse, "default_png") &&
+	     zcbor_tstr_put_term(zse, s.defaults[BOOT_PNG], sizeof(s.defaults[0])) &&
+	     zcbor_tstr_put_lit(zse, "default_gif") &&
+	     zcbor_tstr_put_term(zse, s.defaults[BOOT_GIF], sizeof(s.defaults[0])) &&
+	     zcbor_tstr_put_lit(zse, "default_lua") &&
+	     zcbor_tstr_put_term(zse, s.defaults[BOOT_LUA], sizeof(s.defaults[0])) &&
+	     zcbor_tstr_put_lit(zse, "path_max") && zcbor_uint32_put(zse, BADGE_PATH_MAX);
 
 	return MGMT_RETURN_CHECK(ok);
 }
@@ -473,6 +590,7 @@ static int media_settings_set(struct smp_streamer *ctxt)
 {
 	struct zcbor_string boot = { 0 };
 	struct zcbor_string name = { 0 };
+	struct zcbor_string defaults[BOOT_MODES] = { 0 };
 	uint32_t brightness = 0;
 	size_t decoded;
 
@@ -480,6 +598,10 @@ static int media_settings_set(struct smp_streamer *ctxt)
 		ZCBOR_MAP_DECODE_KEY_DECODER("brightness", zcbor_uint32_decode, &brightness),
 		ZCBOR_MAP_DECODE_KEY_DECODER("boot", zcbor_tstr_decode, &boot),
 		ZCBOR_MAP_DECODE_KEY_DECODER("name", zcbor_tstr_decode, &name),
+		/* in enum badge_boot_mode order, from fields[3] on */
+		ZCBOR_MAP_DECODE_KEY_DECODER("default_png", zcbor_tstr_decode, &defaults[BOOT_PNG]),
+		ZCBOR_MAP_DECODE_KEY_DECODER("default_gif", zcbor_tstr_decode, &defaults[BOOT_GIF]),
+		ZCBOR_MAP_DECODE_KEY_DECODER("default_lua", zcbor_tstr_decode, &defaults[BOOT_LUA]),
 	};
 
 	if (zcbor_map_decode_bulk(ctxt->reader->zs, fields, ARRAY_SIZE(fields), &decoded)) {
@@ -490,6 +612,16 @@ static int media_settings_set(struct smp_streamer *ctxt)
 	    (fields[1].found && badge_boot_from_dir(boot.value, boot.len) < 0) ||
 	    (fields[2].found && !badge_name_valid(name.value, name.len))) {
 		return MGMT_ERR_EINVAL;
+	}
+	for (int i = 0; i < BOOT_MODES; i++) {
+		if (fields[3 + i].found && !badge_path_valid(defaults[i].value, defaults[i].len)) {
+			return MGMT_ERR_EINVAL;
+		}
+	}
+	for (int i = 0; i < BOOT_MODES; i++) {
+		if (fields[3 + i].found) {
+			badge_settings_set_default(i, defaults[i].value, defaults[i].len);
+		}
 	}
 	if (fields[0].found) {
 		badge_settings_set_brightness(brightness);
@@ -535,6 +667,9 @@ static const struct mgmt_handler media_handlers[] = {
 	{ .mh_read = media_settings },
 	{ .mh_write = media_settings_set },
 	{ .mh_read = media_battery },
+	{ .mh_write = media_mkdir },
+	{ .mh_write = media_remove },
+	{ .mh_write = media_rename },
 };
 
 static struct mgmt_group media_group = {

@@ -7,7 +7,10 @@ const GROUP = { OS: 0, IMAGE: 1, STAT: 2, FS: 8, MEDIA: 64 };
 const OS = { RESET: 5 };
 const IMAGE = { STATE: 0, UPLOAD: 1 };
 const FS = { FILE: 0, CLOSE: 4 };
-const MEDIA = { INFO: 0, LIST: 1, PREPARE: 2, COMMIT: 3, DELETE: 4, PREVIEW: 5, WALK: 6, PUT: 7, RUN: 8, SCRIPT: 9, FORMAT: 10, SETTINGS: 11, SET_SETTINGS: 12, BATTERY: 13 }; // cool-s-firmware/src/media_mgmt.c
+const MEDIA = {
+  INFO: 0, LIST: 1, PREPARE: 2, COMMIT: 3, DELETE: 4, PREVIEW: 5, WALK: 6, PUT: 7, RUN: 8, SCRIPT: 9, FORMAT: 10,
+  SETTINGS: 11, SET_SETTINGS: 12, BATTERY: 13, MKDIR: 14, REMOVE: 15, RENAME: 16,
+}; // cool-s-firmware/src/media_mgmt.c
 
 const MOUNT = '/lfs1';
 
@@ -15,6 +18,8 @@ const FS_ERR_NOT_FOUND = 3;
 const isNotFound = (error) => error instanceof SmpError &&
   (error.group === null ? error.rc === RC.NOT_FOUND : error.group === GROUP.FS && error.rc === FS_ERR_NOT_FOUND);
 const UPLOAD_PATH = `${MOUNT}/.upload`;
+// relative to the root, '' for the root itself
+const fullPath = (path) => `${MOUNT}${path && `/${path}`}`;
 
 // the first firmware chunk waits for the whole slot to be erased
 const ERASE_TIMEOUT = 120000;
@@ -188,15 +193,15 @@ export class Badge {
     return data;
   }
 
-  // Every file and folder below path ('' is the root), hidden ones left out.
-  // null means the firmware cannot list outside the media folders.
-  async walk(path = '') {
+  // The files and folders in one folder, path relative to the root ('' is the root), hidden ones
+  // left out: [{ name, isDir, size }]. null means the firmware cannot list outside the media folders.
+  async entries(path = '') {
     const found = [];
     let skip = 0;
     for (;;) {
       let response;
       try {
-        response = await this.smp.request(READ, GROUP.MEDIA, MEDIA.WALK, { path: `${MOUNT}${path && `/${path}`}`, skip });
+        response = await this.smp.request(READ, GROUP.MEDIA, MEDIA.WALK, { path: fullPath(path), skip });
       } catch (error) {
         if (skip === 0 && error instanceof SmpError && error.group === null && error.rc === RC.NOT_SUPPORTED) return null;
         throw error;
@@ -204,14 +209,56 @@ export class Badge {
       const { entries, next } = response;
       for (let i = 0; i < entries.length; i += 3) {
         const [name, isDir, size] = entries.slice(i, i + 3);
-        const child = path ? `${path}/${name}` : name;
-        if (isDir) found.push(...(await this.walk(child)));
-        else found.push({ path: child, size });
+        found.push({ name, isDir, size });
       }
       if (!(next > skip)) break;
       skip = next;
     }
     return found;
+  }
+
+  // Every file below path ('' is the root), hidden ones left out.
+  // null means the firmware cannot list outside the media folders.
+  async walk(path = '') {
+    const entries = await this.entries(path);
+    if (!entries) return null;
+    const found = [];
+    for (const { name, isDir, size } of entries) {
+      const child = path ? `${path}/${name}` : name;
+      if (isDir) found.push(...(await this.walk(child)));
+      else found.push({ path: child, size });
+    }
+    return found;
+  }
+
+  // The file manager's commands, paths relative to the root. They need firmware whose
+  // settings() has default_png; the others answer NOT_SUPPORTED.
+  async mkdir(path) {
+    await this.#fileCommand(MEDIA.MKDIR, { path: fullPath(path) }, 'There is already something of that name.');
+  }
+
+  // a file, or a folder once it is empty
+  async removePath(path) {
+    await this.#fileCommand(MEDIA.REMOVE, { path: fullPath(path) }, 'The folder is not empty.');
+  }
+
+  // also moves; the defaults in the settings follow the file
+  async rename(from, to) {
+    await this.#fileCommand(MEDIA.RENAME, { from: fullPath(from), to: fullPath(to) },
+      'There is already something of that name.');
+  }
+
+  async #fileCommand(id, body, badStateText) {
+    await this.closeFile();
+    try {
+      await this.smp.request(WRITE, GROUP.MEDIA, id, body, FLASH_TIMEOUT);
+    } catch (error) {
+      if (error instanceof SmpError && error.group === null && error.rc === RC.BAD_STATE) throw new Error(badStateText);
+      if (error instanceof SmpError && error.group === null && error.rc === RC.NOT_SUPPORTED) {
+        throw new Error('The firmware on this badge cannot do this yet. Update it first.');
+      }
+      throw error;
+    }
   }
 
   // Any file, path relative to the root. The badge only moves it into place once

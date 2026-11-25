@@ -37,6 +37,55 @@ export function confirmDialog(title, message, action) {
   });
 }
 
+// Asks for a line of text. check(value) returns why it cannot be used, or '' if it can.
+// Resolves to the text, or null if cancelled.
+export function promptDialog(title, label, value, action, check = () => '') {
+  const dialog = $('#prompt');
+  const input = $('#prompt-input');
+  const error = $('#prompt-error');
+  $('#prompt-title').textContent = title;
+  $('#prompt-label').textContent = label;
+  $('#prompt-action').textContent = action;
+  input.value = value;
+  error.textContent = '';
+  input.removeAttribute('aria-invalid');
+
+  const validate = () => {
+    const problem = input.value.trim() ? check(input.value.trim()) : '';
+    error.textContent = problem;
+    input.toggleAttribute('aria-invalid', Boolean(problem));
+    $('#prompt-action').disabled = !input.value.trim() || Boolean(problem);
+    return !problem;
+  };
+  const onSubmit = (event) => {
+    // only the action button is checked, Cancel always closes
+    if (event.submitter?.value === 'ok' && !validate()) event.preventDefault();
+  };
+  // Enter would submit with the form's first button, which is Cancel
+  const onKey = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (validate() && input.value.trim()) $('#prompt-action').click();
+  };
+  input.addEventListener('input', validate);
+  input.addEventListener('keydown', onKey);
+  dialog.querySelector('form').addEventListener('submit', onSubmit);
+  validate();
+  dialog.returnValue = '';
+  dialog.showModal();
+  // the name without its extension, which is usually what is changed
+  const dot = value.lastIndexOf('.');
+  input.setSelectionRange(0, dot > 0 ? dot : value.length);
+  return new Promise((resolve) => {
+    dialog.addEventListener('close', () => {
+      input.removeEventListener('input', validate);
+      input.removeEventListener('keydown', onKey);
+      dialog.querySelector('form').removeEventListener('submit', onSubmit);
+      resolve(dialog.returnValue === 'ok' ? input.value.trim() : null);
+    }, { once: true });
+  });
+}
+
 // Tabs may share a panel, as GIF and PNG do.
 export function setupTabs(tablist, onSelect) {
   const tabs = [...tablist.querySelectorAll('[role="tab"]')];

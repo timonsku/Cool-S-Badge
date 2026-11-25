@@ -7,7 +7,8 @@ A script is a plain `.lua` text file of at most 12 KB.
 Write it in the web UI's Code tab and press "Upload and run" (Ctrl+S): the badge starts it immediately, the editor
 shows any error together with its line. Scripts are kept in the `lua` folder on the badge. Pick them with the buttons
 like a GIF or PNG, the top buttons switch to the Lua mode, the bottom buttons step through the scripts. Holding the
-bottom two for 3 seconds makes the running script `default.lua`.
+bottom two for 3 seconds makes the running script the one the Lua mode starts with, as does "Make default" in the
+web UI's Media tab.
 
 Ready-made scripts are in [web/examples](../web/examples), and in the editor's Open menu.
 

@@ -66,6 +66,14 @@
 gd_GIF *gif;
 /* the GIF plays from the preview buffer, not from a file */
 static bool gif_is_preview;
+/* the file the GIF plays from */
+static char gif_path[MEDIA_PATH_MAX];
+/*
+ * Held by the main loop while it uses gif, and by display_files_lock() while
+ * another thread deletes or renames files: the GIF streams from its file.
+ */
+K_MUTEX_DEFINE(gif_lock);
+static bool gif_released;
 
 uint8_t gif_frame[GD_MAX_PIXELS * 3];
 uint8_t *gif_color;
@@ -215,6 +223,7 @@ enum {
 	REQUEST_PREVIEW_END = BIT(5),
 	REQUEST_RENDER = BIT(8),
 	REQUEST_SHOW_BATTERY = BIT(9),
+	REQUEST_RELOAD = BIT(10),
 };
 static atomic_t requests;
 
@@ -490,6 +499,8 @@ void imageCommand(const void *buf, uint16_t len)
 
 			// LOG_HEXDUMP_DBG(data,len,"Raw GIF packet");
 			if (save_gif_to_file(DEFAULT_GIF_PATH, &data[15], len - 15) == 0) {
+				// the app expects its GIF to be the default from now on
+				badge_settings_set_default(MEDIA_GIF, "", 0);
 				// only the main loop may open or close the decoder it is playing from
 				selected = 0;
 				display_state_set(DISPLAY_LOADING_GIF);
@@ -504,7 +515,9 @@ void imageCommand(const void *buf, uint16_t len)
 				selected = 0;
 				display_state_set(DISPLAY_STATIC);
 				// kept as sent, the badge decodes it again at boot
-				file_write_replace(DEFAULT_PNG_PATH, MEDIA_ROOT "/.ipixel.tmp", &data[15], len - 15);
+				if (file_write_replace(DEFAULT_PNG_PATH, MEDIA_ROOT "/.ipixel.tmp", &data[15], len - 15) == 0) {
+					badge_settings_set_default(MEDIA_PNG, "", 0);
+				}
 			}
 			// acknowledge receipt
 			unsigned char bytes[] = {0x5, 0x0, 0x8, 0x80, 0x1};
@@ -620,8 +633,10 @@ void bluetooth_default_name(char *out, size_t len) {
 // keeps the GIF that is playing if the new one does not open
 int process_gif(const char *path) {
 	LOG_INF("Opening GIF %s", path);
+	k_mutex_lock(&gif_lock, K_FOREVER);
 	gd_GIF *next = gd_open_gif(path);
 	if(!next){
+		k_mutex_unlock(&gif_lock);
 		LOG_ERR("GIF open error");
 		return -EINVAL;
 	}
@@ -630,7 +645,34 @@ int process_gif(const char *path) {
 	}
 	gif = next;
 	gif_is_preview = false;
+	strncpy(gif_path, path, sizeof(gif_path) - 1);
+	k_mutex_unlock(&gif_lock);
 	return 0;
+}
+
+// a path at or below the folder or file dir
+static bool path_within(const char *path, const char *dir) {
+	size_t len = strlen(dir);
+	return strncmp(path, dir, len) == 0 && (path[len] == '\0' || path[len] == '/');
+}
+
+void display_files_lock(const char *path) {
+	k_mutex_lock(&gif_lock, K_FOREVER);
+	if (gif && !gif_is_preview && path_within(gif_path, path)) {
+		LOG_INF("Closing %s, it is about to change", gif_path);
+		gd_close_gif(gif);
+		gif = NULL;
+		gif_released = true;
+	}
+}
+
+void display_files_unlock(void) {
+	bool reload = gif_released;
+	gif_released = false;
+	k_mutex_unlock(&gif_lock);
+	if (reload) {
+		atomic_or(&requests, REQUEST_RELOAD);
+	}
 }
 
 void display_preview_play(void) {
@@ -670,11 +712,13 @@ static void play_preview(void) {
 		LOG_WRN("The preview is not a GIF the badge can play");
 		return;
 	}
+	k_mutex_lock(&gif_lock, K_FOREVER);
 	if (gif) {
 		gd_close_gif(gif);
 	}
 	gif = next;
 	gif_is_preview = true;
+	k_mutex_unlock(&gif_lock);
 	gif_next_frame_at = 0;
 	display_state = DISPLAY_GIF;
 }
@@ -686,8 +730,7 @@ static void end_preview(void) {
 	}
 }
 
-void playback_animation(struct pixel_animation *animation) {
-
+static void play_gif_frame(void) {
 	int ret;
 	if(!gif || display_state != DISPLAY_GIF || k_uptime_get() < gif_next_frame_at){
 		return;
@@ -727,6 +770,12 @@ void playback_animation(struct pixel_animation *animation) {
 	gif_next_frame_at = k_uptime_get() + gif->gce.delay * 10;
 }
 
+void playback_animation(struct pixel_animation *animation) {
+	k_mutex_lock(&gif_lock, K_FOREVER);
+	play_gif_frame();
+	k_mutex_unlock(&gif_lock);
+}
+
 void display_state_set(enum display_state state) {
 	display_state = state;
 }
@@ -749,11 +798,29 @@ static bool file_exists(const char *path) {
 	return fs_stat(path, &info) == 0 && info.type == FS_DIR_ENTRY_FILE;
 }
 
+/*
+ * The default file of a kind: the one the settings name, or else the one in
+ * the root, as before there was a setting. False if that file is missing too.
+ */
+static bool default_path(enum media_kind kind, char *out, size_t len) {
+	char set[BADGE_PATH_MAX + 1];
+	badge_settings_default(kind, set, sizeof(set));
+	if (set[0]) {
+		snprintf(out, len, MEDIA_ROOT "/%s", set);
+		if (file_exists(out)) {
+			return true;
+		}
+		LOG_WRN("The default %s file %s is missing", media_kinds[kind].dir, out);
+	}
+	strncpy(out, media_kinds[kind].default_path, len - 1);
+	out[len - 1] = 0;
+	return file_exists(out);
+}
+
 // index 0 is the default file, n the n-th file in the folder
 static int selection_path(enum media_kind kind, int index, char *out, size_t len) {
 	if (index == 0) {
-		strncpy(out, media_kinds[kind].default_path, len - 1);
-		out[len - 1] = 0;
+		default_path(kind, out, len);
 		return 0;
 	}
 	return media_path(media_kinds[kind].dir, index, out, len);
@@ -804,6 +871,8 @@ void display_state_process() {
 		}
 		break;
 	case DISPLAY_LOADING_GIF:
+		// until it plays: another thread may be about to delete the file
+		k_mutex_lock(&gif_lock, K_FOREVER);
 		display_state = DISPLAY_GIF;
 		rc = selection_path(MEDIA_GIF, index, path, sizeof(path));
 		if (rc == 0) {
@@ -828,6 +897,7 @@ void display_state_process() {
 				display_state = DISPLAY_LOADING_STATIC;
 			}
 		}
+		k_mutex_unlock(&gif_lock);
 		break;
 	case DISPLAY_LOADING_LUA:
 		display_state = DISPLAY_LUA;
@@ -859,7 +929,8 @@ void display_state_process() {
 
 // whether there is anything to show in a mode; there is always the static image
 static bool kind_available(enum media_kind kind) {
-	return kind == MEDIA_PNG || file_exists(media_kinds[kind].default_path) ||
+	char path[MEDIA_PATH_MAX];
+	return kind == MEDIA_PNG || default_path(kind, path, sizeof(path)) ||
 	       media_count(media_kinds[kind].dir) > 0;
 }
 
@@ -885,13 +956,20 @@ static void step_selection(int delta) {
 	if (count < 0) {
 		count = 0;
 	}
-	int first = file_exists(media_kinds[kind].default_path) ? 0 : 1;
+	char path[MEDIA_PATH_MAX];
+	bool has_default = default_path(kind, path, sizeof(path));
+	// a default from the folder is not shown twice: it is that file there
+	int in_folder = has_default ? media_index(media_kinds[kind].dir, path) : 0;
+	int first = has_default && in_folder <= 0 ? 0 : 1;
 	int span = count + 1 - first;
 	if (span <= 1) {
 		LOG_INF("Nothing else to show");
 		return;
 	}
 	int index = selected;
+	if (index == 0 && in_folder > 0) {
+		index = in_folder;
+	}
 	if (index < first || index > count) {
 		// files were removed since
 		index = first;
@@ -913,7 +991,9 @@ static void set_selection_as_default(void) {
 	if (media_path(media_kinds[kind].dir, index, path, sizeof(path)) != 0) {
 		return;
 	}
-	int rc = file_copy_replace(path, media_kinds[kind].default_path, MEDIA_ROOT "/.default.tmp");
+	// the settings name it, the file stays where it is
+	const char *relative = &path[sizeof(MEDIA_ROOT "/") - 1];
+	int rc = badge_settings_set_default(kind, relative, strlen(relative));
 	if (rc != 0) {
 		LOG_ERR("Could not make %s the default: %d", path, rc);
 		return;
@@ -1242,7 +1322,10 @@ void check_for_recovery_mode()
 
 int save_gif_to_file(const char *filename, const uint8_t* gif_data, size_t gif_size)
 {
+	// it may be the GIF that is playing
+	display_files_lock(filename);
 	int rc = file_write_replace(filename, MEDIA_ROOT "/.ipixel.tmp", gif_data, gif_size);
+	display_files_unlock();
 	if (rc == 0) {
 		LOG_INF("Saved GIF data to file %s", filename);
 	}
@@ -1365,7 +1448,14 @@ static void handle_requests(void)
 		end_preview();
 	}
 	if (r & REQUEST_SAVE_DRAWING) {
-		pixels_to_png_file(pixels_raw, STRIP_NUM_PIXELS, DEFAULT_PNG_PATH, MEDIA_ROOT "/.draw.tmp");
+		if (pixels_to_png_file(pixels_raw, STRIP_NUM_PIXELS, DEFAULT_PNG_PATH, MEDIA_ROOT "/.draw.tmp") == 0) {
+			badge_settings_set_default(MEDIA_PNG, "", 0);
+		}
+	}
+	if (r & REQUEST_RELOAD) {
+		// the file that was showing was deleted or renamed
+		selected = 0;
+		display_state_set(media_kinds[current_kind()].loading);
 	}
 	if (r & REQUEST_RUN_SCRIPT) {
 		// started again even if it already runs: the web UI uploaded a new version

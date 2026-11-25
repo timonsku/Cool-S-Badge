@@ -192,7 +192,10 @@ progress { display: block; width: 100%; height: 16px; accent-color: var(--led); 
   border: 2px solid var(--line);
   border-radius: 6px;
 }
-.file-info { display: flex; flex: 1; flex-wrap: wrap; align-items: baseline; gap: 0 12px; min-width: 0; }
+.file-info { display: flex; flex: 1 1 150px; flex-wrap: wrap; align-items: baseline; gap: 0 12px; min-width: 0; }
+/* on a narrow screen the buttons go below the name rather than squeeze it */
+.files:not(.with-previews) .file { flex-wrap: wrap; }
+.files:not(.with-previews) .file > :not(.file-info) { margin-left: auto; }
 .file-info strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-info span { color: var(--muted); font-size: 14px; }
 .file .delete { border-color: var(--bad); color: var(--bad); }
@@ -412,7 +415,7 @@ dialog p { overflow-wrap: anywhere; }
 @media (max-width: 520px) {
   .board { padding: 22px 18px; }
   .subtabs { width: 100%; }
-  .subtabs button { flex: 1; }
+  .subtabs button { flex: 1 1 auto; min-width: 0; padding: 6px 4px; white-space: nowrap; }
   .switch { margin-left: 0; }
   #refresh { margin-left: auto; }
   .tabs { gap: 4px; padding-left: 8px; }
@@ -488,6 +491,28 @@ dialog p { overflow-wrap: anywhere; }
 .tok-comment { color: #6e7781; font-style: italic; }
 #code-status { min-height: 1.5em; margin: 12px 0; }
 .file-actions { display: flex; gap: 8px; }
+.file-info .tag {
+  padding: 0 8px; border: 2px solid var(--ink); border-radius: 999px;
+  color: var(--ink); font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+
+/* the All tab under Media */
+.browser-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.browser-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; min-width: 0; font-size: 17px; overflow-wrap: anywhere; }
+.crumbs span { color: var(--muted); }
+#panel-all { margin: -8px; padding: 8px; border: 2px dashed transparent; border-radius: 6px; }
+#panel-all.over { border-color: var(--led); background: #e0f4fd; }
+.browser .file-actions { flex-wrap: wrap; justify-content: flex-end; }
+.browser .folder { background: var(--desk); }
+.folder-name { font-weight: 600; text-align: left; overflow-wrap: anywhere; }
+.prompt-field { display: grid; gap: 4px; }
+.prompt-field input {
+  min-height: 40px; padding: 6px 10px; border: 2px solid var(--ink); border-radius: 4px;
+  background: #fff; color: var(--ink); font: inherit;
+}
+.prompt-field input[aria-invalid="true"] { border-color: var(--bad); }
+#prompt-error { min-height: 1.5em; margin: 4px 0 12px; }
 
 /* Settings tab */
 .settings h2 { margin-top: 20px; }

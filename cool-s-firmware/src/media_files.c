@@ -22,8 +22,11 @@ static bool is_media(const struct fs_dirent *entry)
 	return entry->type == FS_DIR_ENTRY_FILE && entry->name[0] != '.';
 }
 
-/* index <= 0 counts the files, otherwise copies the index-th path into out */
-static int media_walk(const char *dir, int index, char *out, size_t len)
+/*
+ * index <= 0 counts the files, otherwise copies the index-th path into out.
+ * With find, returns the index of the file of that name instead.
+ */
+static int media_walk(const char *dir, int index, char *out, size_t len, const char *find)
 {
 	char path[MEDIA_PATH_MAX];
 	struct fs_dir_t d;
@@ -47,7 +50,11 @@ static int media_walk(const char *dir, int index, char *out, size_t len)
 			continue;
 		}
 		count++;
-		if (count == index) {
+		if (find && strcmp(entry.name, find) == 0) {
+			fs_closedir(&d);
+			return count;
+		}
+		if (!find && count == index) {
 			if (snprintf(out, len, "%s/%s", path, entry.name) >= (int)len) {
 				rc = -ENAMETOOLONG;
 			}
@@ -58,15 +65,15 @@ static int media_walk(const char *dir, int index, char *out, size_t len)
 	if (rc < 0) {
 		return rc;
 	}
-	if (index > 0) {
-		return count == index ? 0 : -ENOENT;
+	if (find || index > 0) {
+		return find || count != index ? -ENOENT : 0;
 	}
 	return count;
 }
 
 int media_count(const char *dir)
 {
-	return media_walk(dir, 0, NULL, 0);
+	return media_walk(dir, 0, NULL, 0, NULL);
 }
 
 int media_path(const char *dir, int index, char *out, size_t len)
@@ -74,7 +81,19 @@ int media_path(const char *dir, int index, char *out, size_t len)
 	if (index <= 0) {
 		return -EINVAL;
 	}
-	return media_walk(dir, index, out, len);
+	return media_walk(dir, index, out, len, NULL);
+}
+
+int media_index(const char *dir, const char *path)
+{
+	char folder[MEDIA_PATH_MAX];
+	int n = snprintf(folder, sizeof(folder), MEDIA_ROOT "/%s/", dir);
+	const char *name = &path[n];
+
+	if (strncmp(path, folder, n) || !*name || strchr(name, '/')) {
+		return -ENOENT;
+	}
+	return media_walk(dir, 0, NULL, 0, name);
 }
 
 int file_write_replace(const char *path, const char *tmp, const void *data, size_t len)
@@ -99,54 +118,6 @@ int file_write_replace(const char *path, const char *tmp, const void *data, size
 	rc = fs_rename(tmp, path);
 	if (rc < 0) {
 		LOG_ERR("rename %s: %d", path, rc);
-		fs_unlink(tmp);
-	}
-	return rc;
-}
-
-int file_copy_replace(const char *from, const char *to, const char *tmp)
-{
-	static uint8_t buffer[256];
-	struct fs_file_t in;
-	struct fs_file_t out;
-	ssize_t got = 0;
-	int rc;
-
-	fs_unlink(tmp);
-	fs_file_t_init(&in);
-	fs_file_t_init(&out);
-	rc = fs_open(&in, from, FS_O_READ);
-	if (rc < 0) {
-		LOG_ERR("open %s: %d", from, rc);
-		return rc;
-	}
-	rc = fs_open(&out, tmp, FS_O_CREATE | FS_O_WRITE);
-	if (rc < 0) {
-		LOG_ERR("open %s: %d", tmp, rc);
-		fs_close(&in);
-		return rc;
-	}
-	for (;;) {
-		got = fs_read(&in, buffer, sizeof(buffer));
-		if (got <= 0) {
-			break;
-		}
-		ssize_t written = fs_write(&out, buffer, got);
-		if (written != got) {
-			got = written < 0 ? written : -ENOSPC;
-			break;
-		}
-	}
-	fs_close(&in);
-	rc = fs_close(&out);
-	if (got < 0 || rc < 0) {
-		LOG_ERR("copy %s: %d", from, got < 0 ? (int)got : rc);
-		fs_unlink(tmp);
-		return got < 0 ? (int)got : rc;
-	}
-	rc = fs_rename(tmp, to);
-	if (rc < 0) {
-		LOG_ERR("rename %s: %d", to, rc);
 		fs_unlink(tmp);
 	}
 	return rc;

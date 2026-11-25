@@ -85,8 +85,9 @@
           <button id="tab-gif" type="button" role="tab" aria-selected="true" aria-controls="panel-folder" data-dir="gif">GIF</button>
           <button id="tab-png" type="button" role="tab" aria-selected="false" aria-controls="panel-folder" data-dir="png" tabindex="-1">PNG</button>
           <button id="tab-lua" type="button" role="tab" aria-selected="false" aria-controls="panel-folder" data-dir="lua" tabindex="-1">Lua</button>
+          <button id="tab-all" type="button" role="tab" aria-selected="false" aria-controls="panel-all" data-dir="all" tabindex="-1">All</button>
         </div>
-        <label class="switch">
+        <label id="preview-switch" class="switch">
           <input id="preview-toggle" type="checkbox" role="switch" autocomplete="off">
           <span>Show previews</span>
         </label>
@@ -99,6 +100,7 @@
           <span id="drop-text"></span>
           <small>Saved in <code id="folder-path">/gif</code> on the badge</small>
         </label>
+        <p id="folder-default" class="hint" hidden></p>
 
         <div id="lua-help" class="banner info" hidden>
           Lua scripts draw LED animations on the badge. Define <code>frame(t)</code> and set LEDs with
@@ -115,6 +117,26 @@
 
         <ul id="files" class="files"></ul>
         <p id="files-empty" class="empty"></p>
+      </div>
+
+      <div id="panel-all" role="tabpanel" aria-labelledby="tab-all" hidden>
+        <div class="browser-bar">
+          <nav id="browser-path" class="crumbs" aria-label="Folder"></nav>
+          <div class="browser-actions">
+            <button id="browser-mkdir" type="button" disabled>New folder</button>
+            <button id="browser-upload" type="button" disabled>Upload files</button>
+            <input id="browser-input" type="file" multiple hidden>
+          </div>
+        </div>
+        <p id="browser-hint" class="hint"></p>
+
+        <div id="browser-progress" class="progress" hidden>
+          <span id="browser-label"></span>
+          <progress id="browser-bar" max="1" value="0" aria-labelledby="browser-label"></progress>
+        </div>
+
+        <ul id="browser-list" class="files browser"></ul>
+        <p id="browser-empty" class="empty"></p>
       </div>
     </section>
 
@@ -348,6 +370,21 @@
       <div class="dialog-actions">
         <button value="cancel" autofocus>Cancel</button>
         <button id="confirm-action" class="primary" value="ok">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="prompt" aria-labelledby="prompt-title">
+    <form method="dialog">
+      <h2 id="prompt-title"></h2>
+      <label class="prompt-field">
+        <span id="prompt-label"></span>
+        <input id="prompt-input" type="text" autocomplete="off" spellcheck="false" aria-describedby="prompt-error">
+      </label>
+      <p id="prompt-error" class="hint error" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button id="prompt-action" class="primary" value="ok">OK</button>
       </div>
     </form>
   </dialog>

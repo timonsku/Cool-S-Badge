@@ -28,11 +28,20 @@ int media_count(const char *dir);
 /* Path of the index-th file (1-based) in MEDIA_ROOT/<dir>, in directory order. */
 int media_path(const char *dir, int index, char *out, size_t len);
 
+/* Index (1-based) of the file at full path if it is in MEDIA_ROOT/<dir>, else 0 or an error. */
+int media_index(const char *dir, const char *path);
+
+/*
+ * Around deleting, renaming or replacing path (a file or a folder) from
+ * another thread. A GIF playing from there is closed first, as it streams
+ * from its file, and the badge shows its default again afterwards. Scripts
+ * and PNGs are read whole, so they are not affected. Implemented in main.c.
+ */
+void display_files_lock(const char *path);
+void display_files_unlock(void);
+
 /* Replace path with data, through tmp, so a reset leaves the old or the new file. */
 int file_write_replace(const char *path, const char *tmp, const void *data, size_t len);
-
-/* Replace to with a copy of from, through tmp. */
-int file_copy_replace(const char *from, const char *to, const char *tmp);
 
 /*
  * Decode a PNG into the first n pixels, row by row. Pixels the image does
