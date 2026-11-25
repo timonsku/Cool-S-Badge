@@ -6,6 +6,12 @@
 
 source "Kconfig.zephyr"
 
+config BATTERY_LOG
+	bool "Log every battery reading to /lfs1/battery.log"
+	help
+	  For profiling the battery's discharge curve, see src/battery.c.
+	  Not for release builds: it writes to flash every reading.
+
 menu "Nordic LED-Button BLE GATT service sample"
 
 config BT_LBS_SECURITY_ENABLED

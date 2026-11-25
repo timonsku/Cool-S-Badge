@@ -13,6 +13,12 @@
 
 #include "battery.h"
 
+#ifdef CONFIG_BATTERY_LOG
+#include <stdio.h>
+#include <zephyr/fs/fs.h>
+#include "media_files.h"
+#endif
+
 LOG_MODULE_REGISTER(battery);
 
 #define BATTERY_INTERVAL K_SECONDS(30)
@@ -30,18 +36,24 @@ LOG_MODULE_REGISTER(battery);
 
 static const struct adc_dt_spec vddh = ADC_DT_SPEC_GET_BY_IDX(DT_PATH(zephyr_user), 0);
 
+/*
+ * Battery voltage under load for each percent, from a discharge of the badge's
+ * cell running rainbow.lua at 30 % brightness (2026-11-24, ~8.0 h, built with
+ * CONFIG_BATTERY_LOG). The current is about constant, so percent is the share
+ * of that run time left. 0 % is where the badge browned out.
+ */
 static const uint16_t curve_mv[101] = {
-	3300, 3352, 3403, 3450, 3489, 3520, 3543, 3561, 3576, 3589,  /* 0 % */
-	3600, 3610, 3619, 3626, 3632, 3638, 3642, 3647, 3651, 3655,  /* 10 % */
-	3660, 3665, 3669, 3673, 3677, 3681, 3685, 3689, 3692, 3696,  /* 20 % */
-	3700, 3704, 3708, 3712, 3716, 3720, 3724, 3728, 3732, 3736,  /* 30 % */
-	3740, 3744, 3748, 3752, 3756, 3759, 3763, 3767, 3771, 3776,  /* 40 % */
-	3780, 3785, 3789, 3794, 3799, 3804, 3809, 3814, 3819, 3825,  /* 50 % */
-	3830, 3836, 3841, 3847, 3853, 3859, 3865, 3871, 3877, 3884,  /* 60 % */
-	3890, 3897, 3903, 3910, 3916, 3923, 3930, 3937, 3945, 3952,  /* 70 % */
-	3960, 3968, 3977, 3985, 3994, 4003, 4012, 4022, 4031, 4041,  /* 80 % */
-	4050, 4060, 4069, 4079, 4089, 4099, 4110, 4120, 4130, 4140,  /* 90 % */
-	4150,                                                        /* 100 % */
+	2790, 2990, 3104, 3188, 3252, 3304, 3345, 3378, 3398, 3411,  /* 0 % */
+	3421, 3428, 3434, 3439, 3446, 3452, 3459, 3468, 3475, 3482,  /* 10 % */
+	3492, 3498, 3505, 3512, 3518, 3522, 3529, 3534, 3540, 3545,  /* 20 % */
+	3552, 3556, 3562, 3566, 3571, 3577, 3582, 3587, 3592, 3596,  /* 30 % */
+	3601, 3606, 3612, 3618, 3624, 3628, 3638, 3643, 3650, 3656,  /* 40 % */
+	3665, 3671, 3678, 3686, 3695, 3703, 3711, 3721, 3729, 3737,  /* 50 % */
+	3746, 3756, 3763, 3771, 3778, 3788, 3794, 3803, 3812, 3822,  /* 60 % */
+	3830, 3837, 3848, 3855, 3862, 3871, 3878, 3887, 3896, 3903,  /* 70 % */
+	3911, 3918, 3926, 3933, 3942, 3950, 3957, 3964, 3969, 3976,  /* 80 % */
+	3983, 3989, 3994, 4001, 4007, 4015, 4024, 4035, 4045, 4059,  /* 90 % */
+	4075,                                                    /* 100 % */
 };
 
 static struct battery_state state;
@@ -120,11 +132,48 @@ static int read_mv(int32_t *mv)
 	return rc;
 }
 
+#ifdef CONFIG_BATTERY_LOG
+/*
+ * For profiling the battery: every reading off USB, as "seconds since boot,
+ * mV, unloaded" lines after a "# boot" line, appended to BATTERY_LOG_PATH.
+ * Each one is written through, so the log ends at the last reading before the
+ * battery gave out.
+ */
+#define BATTERY_LOG_PATH MEDIA_ROOT "/battery.log"
+
+static void log_reading(int32_t mv, bool unloaded)
+{
+	static bool started;
+	struct fs_file_t file;
+	char line[40];
+	int len = 0;
+
+	fs_file_t_init(&file);
+	if (fs_open(&file, BATTERY_LOG_PATH, FS_O_CREATE | FS_O_APPEND | FS_O_WRITE) < 0) {
+		return;
+	}
+	if (!started) {
+		len = snprintf(line, sizeof(line), "# boot\n");
+		started = true;
+	}
+	len += snprintf(&line[len], sizeof(line) - len, "%u,%d,%d\n",
+			(uint32_t)(k_uptime_get() / 1000), mv, unloaded);
+	fs_write(&file, line, len);
+	fs_close(&file);
+}
+#endif
+
 void battery_update(bool unloaded)
 {
 	bool usb = nrf_power_usbregstatus_vbusdet_get(NRF_POWER);
 	int32_t mv = 0;
 	int rc = usb ? 0 : read_mv(&mv);
+
+#ifdef CONFIG_BATTERY_LOG
+	if (!usb && rc == 0) {
+		log_reading(mv, unloaded);
+	}
+#endif
 
 	k_spinlock_key_t key = k_spin_lock(&lock);
 	if (usb) {
