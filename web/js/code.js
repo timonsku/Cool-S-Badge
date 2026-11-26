@@ -21,6 +21,7 @@ const EXAMPLES = [
   ['sparkle.lua', 'Sparkles'],
   ['scan.lua', 'Bar sweeping up and down'],
   ['fire.lua', 'Fire'],
+  ['pride.lua', 'Pride flags in a figure 8'],
 ];
 
 const STARTER = `-- Called 50 times a second, t is the time in seconds.
