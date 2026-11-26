@@ -156,8 +156,24 @@
 
           <h2>Color</h2>
           <div class="picker">
-            <input id="draw-color" type="color" aria-label="Paint color" autocomplete="off">
+            <button id="draw-color" type="button" class="color-well" aria-label="Paint color. Click to change it"></button>
             <div id="draw-swatches" class="swatches" role="group" aria-label="Preset colors"></div>
+          </div>
+          <div class="palette-bar">
+            <select id="palette-set" aria-label="Palette" autocomplete="off"></select>
+            <button id="palette-random" type="button" title="Fill this palette with random colors that go together">Random</button>
+            <button id="palette-new" type="button">New palette</button>
+          </div>
+          <div class="custom-colors">
+            <div id="draw-custom" class="swatches" role="group" aria-label="Palette colors">
+              <button id="draw-custom-add" type="button" class="swatch add-swatch" title="Add a color" aria-label="Add a color">+</button>
+            </div>
+          </div>
+          <p id="palette-scheme" class="hint" aria-live="polite"></p>
+          <div class="palette-links">
+            <button id="palette-rename" type="button" class="link">Rename</button>
+            <button id="draw-custom-clear" type="button" class="link">Clear colors</button>
+            <button id="palette-delete" type="button" class="link">Delete palette</button>
           </div>
           <p class="hint">Touch an LED, or drag across several, to paint them. Off switches an LED off.<span class="mouse-only"> Alt-click an LED to pick up its color.</span></p>
           <div class="row">
@@ -385,6 +401,29 @@
       <div class="dialog-actions">
         <button value="cancel" formnovalidate>Cancel</button>
         <button id="prompt-action" class="primary" value="ok">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="color-dialog" aria-labelledby="color-title">
+    <form method="dialog">
+      <h2 id="color-title">Custom color</h2>
+      <div id="color-area" class="color-area" tabindex="0" role="slider" aria-label="Saturation and brightness"
+        aria-valuemin="0" aria-valuemax="100" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown">
+        <span id="color-knob" class="color-knob"></span>
+      </div>
+      <input id="color-hue" class="color-hue" type="range" min="0" max="359" step="1" aria-label="Hue" autocomplete="off">
+      <div class="color-values">
+        <span class="color-compare" aria-hidden="true"><span id="color-old"></span><span id="color-new"></span></span>
+        <label class="prompt-field">
+          <span>Hex</span>
+          <input id="color-hex" type="text" maxlength="7" autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <div class="dialog-actions">
+        <button id="color-delete" value="delete" class="danger">Remove</button>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button id="color-ok" class="primary" value="ok">OK</button>
       </div>
     </form>
   </dialog>

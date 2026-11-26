@@ -1,14 +1,21 @@
 // Draw pictures and animations on a model of the badge, then upload them.
 
 import { app } from './app.js';
-import { $, el, notify } from './dom.js';
+import { $, el, notify, confirmDialog, promptDialog } from './dom.js';
 import { LEDS, LED_COUNT, OUTER, INNER, BUTTONS, VIEW } from './badge-layout.js';
 import { encodeGif, encodePng } from './image-encode.js';
 import { canUpload, uploadFiles } from './media.js';
 import { PREVIEW_MAX } from './badge.js';
 import { formatBytes } from './formats.js';
+import { pickColor as openPicker } from './color-picker.js';
+import { randomPalette } from './palette-gen.js';
 
 const STORAGE_KEY = 'cool-s-drawing';
+const PALETTES_KEY = 'cool-s-palettes';
+const OLD_CUSTOM_KEY = 'cool-s-colors'; // one palette, before there were several
+const MAX_CUSTOM = 10;
+const MAX_PALETTES = 50;
+const RANDOM_COUNT = 5;
 const MAX_FRAMES = 300;
 const MAX_UNDO = 100;
 // GIF delays are centiseconds, and the badge redraws as fast as a delay of 0 allows
@@ -31,6 +38,13 @@ let current = 0;
 let delay = 200;
 let name = 'drawing';
 let color = 0xff0000;
+// Named palettes of up to MAX_CUSTOM colours. `generated` marks one Random filled and nobody has changed since,
+// which Random may then replace without asking.
+let palettes = [];
+let active = 0;
+const palette = () => palettes[active];
+// the palette colour that is selected, which the colour picker then changes, or null
+let selectedSlot = null;
 let undoStack = [];
 let redoStack = [];
 let playing = null;
@@ -228,6 +242,7 @@ function paint(index) {
 }
 
 function pickColor(index) {
+  selectedSlot = null;
   setColor(frames[shown ?? current][index]);
 }
 
@@ -485,9 +500,12 @@ function stop() {
 
 function setColor(value) {
   color = value;
-  $('#draw-color').value = hex(color);
+  $('#draw-color').style.setProperty('--well', hex(color));
   for (const swatch of $('#draw-swatches').children) {
-    swatch.setAttribute('aria-pressed', String(Number(swatch.dataset.color) === color));
+    swatch.setAttribute('aria-pressed', String(selectedSlot === null && Number(swatch.dataset.color) === color));
+  }
+  for (const swatch of $('#draw-custom').querySelectorAll('.swatch[data-slot]')) {
+    swatch.setAttribute('aria-pressed', String(Number(swatch.dataset.slot) === selectedSlot));
   }
   $('#draw-stage').style.setProperty('--paint', hex(color));
   save();
@@ -500,10 +518,182 @@ function buildSwatches() {
     });
     swatch.dataset.color = value;
     swatch.style.setProperty('--swatch', hex(value));
-    swatch.addEventListener('click', () => setColor(value));
+    swatch.addEventListener('click', () => {
+      selectedSlot = null;
+      setColor(value);
+    });
     return swatch;
   });
   $('#draw-swatches').replaceChildren(...swatches);
+}
+
+const isColor = (c) => Number.isInteger(c) && c >= 0 && c <= 0xffffff;
+
+function loadPalettes() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PALETTES_KEY));
+    if (Array.isArray(saved?.palettes)) {
+      palettes = saved.palettes
+        .filter((p) => typeof p?.name === 'string' && Array.isArray(p.colors))
+        .slice(0, MAX_PALETTES)
+        .map((p) => ({ name: p.name, colors: p.colors.filter(isColor).slice(0, MAX_CUSTOM), generated: p.generated === true }));
+      if (Number.isInteger(saved.active)) active = saved.active;
+    } else {
+      const old = JSON.parse(localStorage.getItem(OLD_CUSTOM_KEY));
+      if (Array.isArray(old) && old.some(isColor)) {
+        palettes = [{ name: 'My colors', colors: old.filter(isColor).slice(0, MAX_CUSTOM), generated: false }];
+      }
+    }
+  } catch {
+    // nothing saved, or storage is blocked
+  }
+  if (!palettes.length) palettes = [{ name: 'Palette 1', colors: [], generated: false }];
+  active = Math.min(Math.max(active, 0), palettes.length - 1);
+}
+
+function savePalettes() {
+  try {
+    localStorage.setItem(PALETTES_KEY, JSON.stringify({ palettes, active }));
+    localStorage.removeItem(OLD_CUSTOM_KEY);
+  } catch {
+    // the palettes just won't survive a reload
+  }
+}
+
+function paletteChanged(scheme = '') {
+  if (selectedSlot !== null && selectedSlot >= palette().colors.length) selectedSlot = null;
+  $('#palette-scheme').textContent = scheme;
+  savePalettes();
+  buildCustom();
+}
+
+// Paints with a palette colour; the colour picker then changes that slot.
+function selectSlot(slot) {
+  selectedSlot = slot;
+  setColor(palette().colors[slot]);
+}
+
+// The paint colour, and the selected palette colour with it, change as the picker moves.
+async function changeColor() {
+  const slot = selectedSlot;
+  const live = (value) => {
+    setColor(value);
+    if (slot === null || slot !== selectedSlot) return;
+    palette().colors[slot] = value;
+    const swatch = $('#draw-custom').querySelector(`[data-slot="${slot}"]`);
+    swatch.dataset.color = value;
+    swatch.style.setProperty('--swatch', hex(value));
+  };
+  const title = slot === null ? 'Paint color' : `Color ${slot + 1} of ${palette().name}`;
+  const picked = await openPicker(color, title, { removable: slot !== null, input: live });
+  if (picked === null || slot === null) return;
+  if (picked === 'delete') {
+    palette().colors.splice(slot, 1);
+    selectedSlot = null;
+  }
+  palette().generated = false;
+  paletteChanged();
+}
+
+async function addCustom() {
+  const picked = await openPicker(color, `New color in ${palette().name}`);
+  if (picked === null || palette().colors.length >= MAX_CUSTOM) return;
+  palette().colors.push(picked);
+  palette().generated = false;
+  selectedSlot = palette().colors.length - 1;
+  paletteChanged();
+  setColor(picked);
+}
+
+async function randomizePalette() {
+  const current = palette();
+  // a palette picked by hand is not thrown away without asking
+  if (current.colors.length && !current.generated &&
+      !(await confirmDialog(`Replace the colors of ${current.name}?`,
+        'Random fills this palette with new colors. To keep these, make a new palette first.', 'Replace'))) return;
+  const { name, colors } = randomPalette(current.colors.length >= 3 ? current.colors.length : RANDOM_COUNT);
+  current.colors = colors;
+  current.generated = true;
+  selectedSlot = null;
+  paletteChanged(`${name} colors. Press Random again for others.`);
+}
+
+function nameProblem(value, except = null) {
+  if (value.length > 40) return 'Up to 40 characters.';
+  if (palettes.some((p) => p !== except && p.name.toLowerCase() === value.toLowerCase())) return 'Another palette has this name.';
+  return '';
+}
+
+function freeName() {
+  let n = palettes.length + 1;
+  while (palettes.some((p) => p.name === `Palette ${n}`)) n++;
+  return `Palette ${n}`;
+}
+
+async function newPalette() {
+  const value = await promptDialog('New palette', 'Name', freeName(), 'Create', (v) => nameProblem(v));
+  if (value === null || palettes.length >= MAX_PALETTES) return;
+  palettes.push({ name: value, colors: [], generated: false });
+  active = palettes.length - 1;
+  selectedSlot = null;
+  paletteChanged();
+}
+
+async function renamePalette() {
+  const current = palette();
+  const value = await promptDialog('Rename palette', 'Name', current.name, 'Rename', (v) => nameProblem(v, current));
+  if (value === null) return;
+  current.name = value;
+  paletteChanged();
+}
+
+async function deletePalette() {
+  const current = palette();
+  const what = current.colors.length ? ` and its ${current.colors.length} colors` : '';
+  if (!(await confirmDialog(`Delete ${current.name}?`, `This removes the palette${what}.`, 'Delete'))) return;
+  palettes.splice(active, 1);
+  if (!palettes.length) palettes.push({ name: 'Palette 1', colors: [], generated: false });
+  active = Math.min(active, palettes.length - 1);
+  selectedSlot = null;
+  paletteChanged();
+}
+
+async function clearPalette() {
+  const current = palette();
+  const count = current.colors.length === 1 ? 'its color' : `all ${current.colors.length} colors`;
+  if (!(await confirmDialog(`Clear ${current.name}?`, `This removes ${count}. The palette itself stays.`, 'Clear'))) return;
+  current.colors = [];
+  current.generated = false;
+  paletteChanged();
+}
+
+function buildCustom() {
+  const { colors } = palette();
+  const add = $('#draw-custom-add');
+  const swatches = colors.map((value, slot) => {
+    const label = `Color ${slot + 1}, ${hex(value)}`;
+    const swatch = el('button', {
+      type: 'button', className: 'swatch', title: label, 'aria-label': label, 'aria-pressed': 'false',
+    });
+    swatch.dataset.color = value;
+    swatch.dataset.slot = slot;
+    swatch.style.setProperty('--swatch', hex(value));
+    swatch.addEventListener('click', () => selectSlot(slot));
+    return swatch;
+  });
+  $('#draw-custom').replaceChildren(...swatches, add);
+  $('#draw-custom').setAttribute('aria-label', `Colors of ${palette().name}`);
+  add.disabled = colors.length >= MAX_CUSTOM;
+  add.title = add.disabled ? `Up to ${MAX_CUSTOM} colors in a palette` : 'Add a color';
+
+  const select = $('#palette-set');
+  select.replaceChildren(...palettes.map((p, i) => el('option', { value: String(i), textContent: p.name })));
+  select.value = String(active);
+  $('#palette-new').disabled = palettes.length >= MAX_PALETTES;
+  $('#draw-custom-clear').hidden = !colors.length;
+  // the only palette, empty, has nothing to delete
+  $('#palette-delete').hidden = palettes.length === 1 && !colors.length;
+  setColor(color);
 }
 
 // output
@@ -588,10 +778,22 @@ export function setupDraw() {
   load();
   buildStage();
   buildSwatches();
-  setColor(color);
+  loadPalettes();
+  buildCustom();
   renderFrames();
 
-  $('#draw-color').addEventListener('input', ({ target }) => setColor(parseInt(target.value.slice(1), 16)));
+  $('#draw-color').addEventListener('click', changeColor);
+  $('#draw-custom-add').addEventListener('click', addCustom);
+  $('#draw-custom-clear').addEventListener('click', clearPalette);
+  $('#palette-random').addEventListener('click', randomizePalette);
+  $('#palette-new').addEventListener('click', newPalette);
+  $('#palette-rename').addEventListener('click', renamePalette);
+  $('#palette-delete').addEventListener('click', deletePalette);
+  $('#palette-set').addEventListener('change', ({ target }) => {
+    active = Number(target.value);
+    selectedSlot = null;
+    paletteChanged();
+  });
   $('#draw-fill').addEventListener('click', () => edit(() => frames[current].fill(color)));
   $('#draw-clear').addEventListener('click', () => edit(() => frames[current].fill(0)));
   $('#draw-undo').addEventListener('click', () => restore(undoStack, redoStack));
