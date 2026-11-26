@@ -584,7 +584,7 @@ void render(){
 	draw:
 	if(!regulator_is_enabled(led_en)) {
 		regulator_enable(led_en);
-		k_sleep(K_USEC(500));
+		k_sleep(K_MSEC(2));
 	}
 	float brightness = badge_settings_brightness() / 100.0f;
 	for(int i = 0; i < STRIP_NUM_PIXELS; i++) {
