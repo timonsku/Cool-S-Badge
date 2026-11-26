@@ -158,8 +158,41 @@ for (const type of ['dragover', 'drop']) {
   window.addEventListener(type, (event) => event.preventDefault());
 }
 
+const BLUEFY_URL = 'https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055';
+// iPhones, and iPads in mobile mode
+const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+const macOrIPad = !iOS && /Macintosh/.test(navigator.userAgent);
+
+// Every browser on iOS uses Safaris engine, which has no Web Bluetooth. Bluefy adds it, so
+// an iOS browser that has it is Bluefy or one like it, and needs no hint.
+function suggestBluefy(maybeMac) {
+  const copy = el('button', { type: 'button', className: 'link', textContent: 'copy the address of this page' });
+  copy.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(location.href);
+      notify('Copied. Paste it into Bluefy\'s address bar.', 'success');
+    } catch {
+      notify(`Open ${location.href} in Bluefy.`);
+    }
+  });
+  const warning = $('#browser-warning');
+  const store = el('a', {
+    href: BLUEFY_URL, target: '_blank', rel: 'noopener noreferrer', textContent: 'Bluefy browser from the App Store',
+  });
+  warning.replaceChildren(...(maybeMac
+    ? ['This browser has no Web Bluetooth. On a Mac, use Chrome or Edge. On an iPad, install the free ', store,
+      ', then ', copy, ' and open it there.']
+    : ['Safari and the other browsers on iPhone and iPad cannot use Bluetooth. Install the free ', store,
+      ', then ', copy, ' and open it there.']));
+  warning.hidden = false;
+}
+
 async function checkBrowser() {
   let problem = '';
+  if ((iOS || macOrIPad) && window.isSecureContext && !navigator.bluetooth) {
+    suggestBluefy(macOrIPad);
+    return;
+  }
   if (!window.isSecureContext) {
     problem = 'Bluetooth needs a secure page. Open this site over HTTPS or from localhost.';
   } else if (!navigator.bluetooth) {
