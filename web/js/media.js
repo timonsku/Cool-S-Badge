@@ -57,7 +57,10 @@ export async function refreshMedia() {
   if (info) {
     for (const folder of Object.keys(found)) found[folder] = await app.badge.list(folder);
     const settings = await app.badge.settings();
-    if (settings && 'default_png' in settings) {
+    if (settings && 'default_file' in settings) {
+      // v0.10+: one default file for everything
+      set = { single: true, file: settings.default_file, max: settings.path_max };
+    } else if (settings && 'default_png' in settings) {
       set = Object.fromEntries(Object.keys(FORMATS).map((folder) => [folder, settings[`default_${folder}`] ?? '']));
       set.max = settings.path_max;
     }
@@ -72,10 +75,14 @@ export async function refreshMedia() {
 // For the All tab.
 export const storageInfo = () => storage;
 export const fileManagerSupported = () => Boolean(defaults);
+// v0.10+ has one default file, older firmware one for each mode
+export const singleDefault = () => Boolean(defaults?.single);
 
-// The path below the root of the file a mode starts with. Without a setting, or when the
-// badge cannot find it, that is default.<folder> in the root; the badge also copes with that missing.
+// The path below the root of the file a mode starts with. Up to v0.9, without a setting or when
+// the badge cannot find it, that is default.<folder> in the root; the badge also copes with that
+// missing. From v0.10 on, the one default file if it is in that folder, else ''.
 export function defaultFor(folder) {
+  if (defaults?.single) return defaults.file.startsWith(`${folder}/`) ? defaults.file : '';
   return defaults?.[folder] || `default.${folder}`;
 }
 
@@ -83,16 +90,25 @@ export function defaultFor(folder) {
 export function defaultKind(path) {
   if (!defaults) return null;
   const folder = Object.keys(FORMATS).find((name) => FORMATS[name].extension.test(path));
-  return folder && utf8.encode(path).length <= defaults.max ? folder : null;
+  if (!folder || utf8.encode(path).length > defaults.max) return null;
+  // v0.10+ only shows the files directly in png, gif and lua
+  if (defaults.single && !new RegExp(`^${folder}/[^/]+$`).test(path)) return null;
+  return folder;
 }
 
-// Makes the file at path (below the root) the one its mode starts with.
+// Makes the file at path (below the root) the one its mode, or from v0.10 on the badge, starts with.
 export function makeDefault(folder, path) {
   return app.run(async () => {
-    // the file in the root is what the badge uses without a setting
-    await app.badge.setSettings({ [`default_${folder}`]: path === `default.${folder}` ? '' : path });
+    if (defaults?.single) {
+      await app.badge.setSettings({ default_file: path });
+    } else {
+      // the file in the root is what the badge uses without a setting
+      await app.badge.setSettings({ [`default_${folder}`]: path === `default.${folder}` ? '' : path });
+    }
     await refreshMedia();
-    notify(`The badge now starts its ${FORMATS[folder].label} mode with ${path}.`, 'success');
+    notify(defaults?.single
+      ? `The badge now starts with ${path}.`
+      : `The badge now starts its ${FORMATS[folder].label} mode with ${path}.`, 'success');
   });
 }
 
@@ -205,10 +221,18 @@ function render() {
   const { label, noun } = FORMATS[dir];
   const fromRoot = defaultFor(dir) === `default.${dir}`;
   $('#folder-default').hidden = !defaults;
-  $('#folder-default').textContent = fromRoot
-    ? `The badge starts this mode with default.${dir} in the root of its storage, if there is one, ` +
-      `or else the first ${label} ${noun} here. "Make default" picks another.`
-    : `The badge starts this mode with /${defaultFor(dir)}, or with default.${dir} in the root if that is gone.`;
+  if (defaults?.single) {
+    $('#folder-default').textContent = (defaults.file
+      ? `The badge starts with /${defaults.file}. `
+      : 'The badge starts with its first picture, or its first GIF or script if it has no pictures. ' +
+        '"Make default" picks a file to start with. ') +
+      'The lower buttons step through all pictures, then the GIFs, then the scripts.';
+  } else {
+    $('#folder-default').textContent = fromRoot
+      ? `The badge starts this mode with default.${dir} in the root of its storage, if there is one, ` +
+        `or else the first ${label} ${noun} here. "Make default" picks another.`
+      : `The badge starts this mode with /${defaultFor(dir)}, or with default.${dir} in the root if that is gone.`;
+  }
   update();
 }
 

@@ -15,13 +15,16 @@ const POLL_MS = 3000;
 // In web/examples, shipped with the page.
 const EXAMPLES = [
   ['rainbow.lua', 'Rainbow along the chain'],
+  ['buttons.lua', 'Buttons Hello World'],
+  ['double_click.lua', 'Double click a button to change colour'],
+  ['pride.lua', 'Pride flags in a figure 8'],
   ['rainbow_scroll.lua', 'Rainbow scrolling down the S'],
   ['breathe.lua', 'Breathing colour'],
   ['comet.lua', 'Comet with a tail'],
   ['sparkle.lua', 'Sparkles'],
   ['scan.lua', 'Bar sweeping up and down'],
   ['fire.lua', 'Fire'],
-  ['pride.lua', 'Pride flags in a figure 8'],
+  ['snake.lua', 'Snake, top buttons set its speed'],
 ];
 
 const STARTER = `-- Called 50 times a second, t is the time in seconds.

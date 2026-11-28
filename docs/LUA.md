@@ -5,10 +5,10 @@ Firmware v0.7 and newer supports LED animations written in [Lua](https://www.lua
 A script is a plain `.lua` text file of at most 12 KB.
 
 Write it in the web UI's Code tab and press "Upload and run" (Ctrl+S): the badge starts it immediately, the editor
-shows any error together with its line. Scripts are kept in the `lua` folder on the badge. Pick them with the buttons
-like a GIF or PNG, the top buttons switch to the Lua mode, the bottom buttons step through the scripts. Holding the
-bottom two for 3 seconds makes the running script the one the Lua mode starts with, as does "Make default" in the
-web UI's Media tab.
+shows any error together with its line. Scripts are kept in the `lua` folder on the badge. The bottom buttons step
+through them after the pictures and GIFs. Holding the bottom two for 3 seconds makes the running script the file the
+badge starts with, as does "Make default" in the web UI's Media tab. From firmware v0.10 the top buttons are the
+script's, see [Buttons](#buttons).
 
 Ready-made scripts are in [web/examples](../web/examples), and in the editor's Open menu.
 
@@ -93,6 +93,42 @@ A colour is a number `0xRRGGBB`, like `0xff8000` for orange. These are predefine
 | `tri(x)` | The same in straight lines. |
 | `clamp(x, lo, hi)` | `x` limited to `lo`..`hi`, which default to 0 and 1. |
 | `lerp(a, b, t)` | From `a` at `t = 0` to `b` at `t = 1`. |
+
+## Buttons
+
+Firmware v0.10 and newer hands the top two buttons to the script. Define `input(button, pressed, seconds)` and the
+badge calls it each time one is pressed (`pressed` is `true`) or let go (`false`). `button` is `'left'` or `'right'`.
+`seconds` is how long that button was up before this press, or held down before this release: tell a long press from
+a short one, or a double press from two single ones. Before the first press it counts from the script's start.
+Scripts without `input` work as before, the presses are dropped.
+
+```lua
+function input(button, pressed, seconds)
+  if not pressed and seconds > 1 then
+    -- let go after holding it for more than a second
+  end
+end
+```
+
+`input` runs as soon as the press happens, not at the next `frame`: between frames, and while the script waits in
+`sleep()`. A script with its own loop therefore has to `sleep()` now and then to get presses. To pass a decision on
+to `frame`, set a variable declared at the top of the script:
+
+```lua
+speed = 1                 -- shared by input() and frame()
+
+function input(button, pressed)
+  if not pressed then return end
+  if button == 'right' then speed = speed * 2 else speed = speed / 2 end
+end
+
+function frame(t, dt)
+  -- ... uses speed
+end
+```
+
+Pressing both top buttons together still shows the battery, and holding them turns the badge off; the script gets
+those presses too. See `snake.lua`, whose top buttons set its speed.
 
 ## Lua functions
 

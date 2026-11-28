@@ -94,6 +94,10 @@ function update() {
   for (const radio of document.querySelectorAll('input[name="settings-boot"]')) {
     radio.disabled = !known || !app.ready || app.busy;
   }
+  // from v0.10 on the badge starts with its one default file, set in the Media tab
+  const noBoot = known && !('boot' in settings);
+  $('#settings-boot-choices').hidden = noBoot;
+  $('#settings-boot-hint').hidden = noBoot;
 
   const input = $('#settings-name');
   const name = input.value.trim();

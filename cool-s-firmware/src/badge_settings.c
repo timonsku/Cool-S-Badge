@@ -1,11 +1,13 @@
 /*
  * Settings storage, see badge_settings.h. The file is a CBOR map:
  *
- *   {"brightness": 0..100, "boot": "png" | "gif" | "lua", "name": tstr,
- *    "default_png": tstr, "default_gif": tstr, "default_lua": tstr}
+ *   {"brightness": 0..100, "name": tstr, "default_file": tstr}
  *
- * A default is a path below the root, "" or left out for the file in the
- * root (default.png and so on).
+ * default_file is a path below the root, "" or left out for the first file
+ * the badge has. Up to v0.9 the file had "boot" (the mode the badge started
+ * in) and "default_png", "default_gif", "default_lua" (each mode's file, ""
+ * for default.png and so on in the root). Without default_file, the default
+ * of the mode it started in becomes the default file.
  *
  * Keys it does not know are skipped and missing ones keep their default, so
  * older and newer firmware can read each other's file.
@@ -35,35 +37,16 @@ LOG_MODULE_REGISTER(badge_settings);
 BUILD_ASSERT(sizeof(MEDIA_ROOT "/") - 1 + BADGE_PATH_MAX < MEDIA_PATH_MAX,
 	     "a default file's full path has to fit MEDIA_PATH_MAX");
 
-static const char *const boot_dirs[BOOT_MODES] = {
-	[BOOT_PNG] = "png",
-	[BOOT_GIF] = "gif",
-	[BOOT_LUA] = "lua",
-};
+/* the modes up to v0.9, in their "boot" order */
+static const char *const legacy_dirs[] = {"png", "gif", "lua"};
 
 static struct badge_settings settings = {
 	.brightness = DEFAULT_BRIGHTNESS,
-	.boot = BOOT_PNG,
 };
 K_MUTEX_DEFINE(settings_lock);
 
 static void save(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(save_work, save);
-
-const char *badge_boot_dir(uint8_t boot)
-{
-	return boot < BOOT_MODES ? boot_dirs[boot] : boot_dirs[BOOT_PNG];
-}
-
-int badge_boot_from_dir(const char *dir, size_t len)
-{
-	for (int i = 0; i < BOOT_MODES; i++) {
-		if (len == strlen(boot_dirs[i]) && memcmp(dir, boot_dirs[i], len) == 0) {
-			return i;
-		}
-	}
-	return -EINVAL;
-}
 
 bool badge_name_valid(const char *name, size_t len)
 {
@@ -109,17 +92,12 @@ static void save(struct k_work *work)
 	badge_settings_get(&s);
 
 	ZCBOR_STATE_E(zse, 1, buf, sizeof(buf), 1);
-	bool ok = zcbor_map_start_encode(zse, 6) &&
+	bool ok = zcbor_map_start_encode(zse, 3) &&
 		  zcbor_tstr_put_lit(zse, "brightness") && zcbor_uint32_put(zse, s.brightness) &&
-		  zcbor_tstr_put_lit(zse, "boot") && zcbor_tstr_put_term(zse, badge_boot_dir(s.boot), 4) &&
 		  zcbor_tstr_put_lit(zse, "name") && zcbor_tstr_put_term(zse, s.name, sizeof(s.name)) &&
-		  zcbor_tstr_put_lit(zse, "default_png") &&
-		  zcbor_tstr_put_term(zse, s.defaults[BOOT_PNG], sizeof(s.defaults[0])) &&
-		  zcbor_tstr_put_lit(zse, "default_gif") &&
-		  zcbor_tstr_put_term(zse, s.defaults[BOOT_GIF], sizeof(s.defaults[0])) &&
-		  zcbor_tstr_put_lit(zse, "default_lua") &&
-		  zcbor_tstr_put_term(zse, s.defaults[BOOT_LUA], sizeof(s.defaults[0])) &&
-		  zcbor_map_end_encode(zse, 6);
+		  zcbor_tstr_put_lit(zse, "default_file") &&
+		  zcbor_tstr_put_term(zse, s.default_file, sizeof(s.default_file)) &&
+		  zcbor_map_end_encode(zse, 3);
 	if (!ok) {
 		LOG_ERR("Could not encode the settings");
 		return;
@@ -157,9 +135,10 @@ static int load_cbor(void)
 	uint8_t buf[FILE_MAX];
 	ssize_t len = read_file(SETTINGS_PATH, buf, sizeof(buf));
 	uint32_t brightness = settings.brightness;
-	struct zcbor_string boot = { 0 };
 	struct zcbor_string name = { 0 };
-	struct zcbor_string defaults[BOOT_MODES] = { 0 };
+	struct zcbor_string file = { 0 };
+	struct zcbor_string boot = { 0 };
+	struct zcbor_string legacy[ARRAY_SIZE(legacy_dirs)] = { 0 };
 	size_t decoded;
 
 	if (len < 0) {
@@ -169,11 +148,13 @@ static int load_cbor(void)
 	ZCBOR_STATE_D(zsd, 2, buf, len, 1, 0);
 	struct zcbor_map_decode_key_val fields[] = {
 		ZCBOR_MAP_DECODE_KEY_DECODER("brightness", zcbor_uint32_decode, &brightness),
-		ZCBOR_MAP_DECODE_KEY_DECODER("boot", zcbor_tstr_decode, &boot),
 		ZCBOR_MAP_DECODE_KEY_DECODER("name", zcbor_tstr_decode, &name),
-		ZCBOR_MAP_DECODE_KEY_DECODER("default_png", zcbor_tstr_decode, &defaults[BOOT_PNG]),
-		ZCBOR_MAP_DECODE_KEY_DECODER("default_gif", zcbor_tstr_decode, &defaults[BOOT_GIF]),
-		ZCBOR_MAP_DECODE_KEY_DECODER("default_lua", zcbor_tstr_decode, &defaults[BOOT_LUA]),
+		ZCBOR_MAP_DECODE_KEY_DECODER("default_file", zcbor_tstr_decode, &file),
+		ZCBOR_MAP_DECODE_KEY_DECODER("boot", zcbor_tstr_decode, &boot),
+		/* in legacy_dirs order */
+		ZCBOR_MAP_DECODE_KEY_DECODER("default_png", zcbor_tstr_decode, &legacy[0]),
+		ZCBOR_MAP_DECODE_KEY_DECODER("default_gif", zcbor_tstr_decode, &legacy[1]),
+		ZCBOR_MAP_DECODE_KEY_DECODER("default_lua", zcbor_tstr_decode, &legacy[2]),
 	};
 	if (zcbor_map_decode_bulk(zsd, fields, ARRAY_SIZE(fields), &decoded)) {
 		return -EINVAL;
@@ -183,18 +164,23 @@ static int load_cbor(void)
 	if (brightness <= 100) {
 		settings.brightness = brightness;
 	}
-	int mode = badge_boot_from_dir(boot.value, boot.len);
-	if (mode >= 0) {
-		settings.boot = mode;
-	}
 	if (name.value && badge_name_valid(name.value, name.len)) {
 		copy_string(settings.name, sizeof(settings.name), name.value, name.len);
 	}
-	for (int i = 0; i < BOOT_MODES; i++) {
-		if (defaults[i].value && badge_path_valid(defaults[i].value, defaults[i].len)) {
-			copy_string(settings.defaults[i], sizeof(settings.defaults[i]),
-				    defaults[i].value, defaults[i].len);
+	if (!file.value) {
+		/* written by v0.9 or older: what it started with, unless that was a root file */
+		for (size_t i = 0; i < ARRAY_SIZE(legacy_dirs); i++) {
+			if (boot.len == strlen(legacy_dirs[i]) &&
+			    memcmp(boot.value, legacy_dirs[i], boot.len) == 0) {
+				file = legacy[i];
+			}
 		}
+		if (!boot.value) {
+			file = legacy[0];
+		}
+	}
+	if (file.value && badge_path_valid(file.value, file.len)) {
+		copy_string(settings.default_file, sizeof(settings.default_file), file.value, file.len);
 	}
 	return 0;
 }
@@ -206,13 +192,8 @@ void badge_settings_load(void)
 	} else {
 		LOG_WRN("No settings, using the defaults");
 	}
-	LOG_INF("Brightness %u%%, starts with %s, name \"%s\"", settings.brightness,
-		badge_boot_dir(settings.boot), settings.name);
-	for (int i = 0; i < BOOT_MODES; i++) {
-		if (settings.defaults[i][0]) {
-			LOG_INF("Default %s: %s", badge_boot_dir(i), settings.defaults[i]);
-		}
-	}
+	LOG_INF("Brightness %u%%, name \"%s\", default file \"%s\"", settings.brightness,
+		settings.name, settings.default_file);
 }
 
 void badge_settings_flush(void)
@@ -247,20 +228,6 @@ int badge_settings_set_brightness(uint32_t percent)
 	return 0;
 }
 
-int badge_settings_set_boot(const char *dir, size_t len)
-{
-	int mode = badge_boot_from_dir(dir, len);
-
-	if (mode < 0) {
-		return mode;
-	}
-	if (settings.boot != mode) {
-		settings.boot = mode;
-		changed();
-	}
-	return 0;
-}
-
 int badge_settings_set_name(const char *name, size_t len)
 {
 	if (!badge_name_valid(name, len)) {
@@ -280,16 +247,16 @@ int badge_settings_set_name(const char *name, size_t len)
 	return 0;
 }
 
-int badge_settings_set_default(uint8_t mode, const char *path, size_t len)
+int badge_settings_set_default(const char *path, size_t len)
 {
-	if (mode >= BOOT_MODES || !badge_path_valid(path, len)) {
+	if (!badge_path_valid(path, len)) {
 		return -EINVAL;
 	}
 	k_mutex_lock(&settings_lock, K_FOREVER);
-	char *current = settings.defaults[mode];
+	char *current = settings.default_file;
 	bool same = strlen(current) == len && memcmp(current, path, len) == 0;
 	if (!same) {
-		copy_string(current, sizeof(settings.defaults[0]), path, len);
+		copy_string(current, sizeof(settings.default_file), path, len);
 	}
 	k_mutex_unlock(&settings_lock);
 	if (!same) {
@@ -298,10 +265,10 @@ int badge_settings_set_default(uint8_t mode, const char *path, size_t len)
 	return 0;
 }
 
-void badge_settings_default(uint8_t mode, char *out, size_t len)
+void badge_settings_default(char *out, size_t len)
 {
 	k_mutex_lock(&settings_lock, K_FOREVER);
-	strncpy(out, mode < BOOT_MODES ? settings.defaults[mode] : "", len - 1);
+	strncpy(out, settings.default_file, len - 1);
 	out[len - 1] = '\0';
 	k_mutex_unlock(&settings_lock);
 }
@@ -309,20 +276,16 @@ void badge_settings_default(uint8_t mode, char *out, size_t len)
 void badge_settings_path_moved(const char *from, const char *to)
 {
 	size_t from_len = strlen(from);
+	char *path = settings.default_file;
 	bool any = false;
 
 	k_mutex_lock(&settings_lock, K_FOREVER);
-	for (int i = 0; i < BOOT_MODES; i++) {
-		char *path = settings.defaults[i];
-		/* the file itself, or one in the folder */
-		if (!path[0] || strncmp(path, from, from_len) ||
-		    (path[from_len] && path[from_len] != '/')) {
-			continue;
-		}
+	/* the file itself, or one in the folder */
+	if (path[0] && !strncmp(path, from, from_len) && (!path[from_len] || path[from_len] == '/')) {
 		char moved[BADGE_PATH_MAX + 1];
 		int n = to ? snprintf(moved, sizeof(moved), "%s%s", to, &path[from_len]) : 0;
 		if (!to || n >= (int)sizeof(moved)) {
-			/* gone, or too long a path now: the file in the root again */
+			/* gone, or too long a path now: the first file again */
 			path[0] = '\0';
 		} else {
 			strcpy(path, moved);

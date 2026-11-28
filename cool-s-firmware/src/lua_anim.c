@@ -75,8 +75,24 @@ static atomic_t running;
 static K_SEM_DEFINE(start_sem, 0, 1);
 static K_SEM_DEFINE(loaded_sem, 0, 1);
 static K_SEM_DEFINE(idle_sem, 0, 1);
-/* given to cut a sleep() short when the script has to stop */
+/* given to cut a sleep() short when the script has to stop or a button changed */
 static K_SEM_DEFINE(wake_sem, 0, 1);
+
+/* button changes waiting for the script's input() */
+struct input_event_msg {
+	uint32_t at; /* uptime in ms when it happened */
+	uint8_t button; /* enum lua_button */
+	uint8_t pressed;
+};
+K_MSGQ_DEFINE(input_queue, sizeof(struct input_event_msg), 8, 4);
+static const char *const button_names[] = {
+	[LUA_BUTTON_LEFT] = "left",
+	[LUA_BUTTON_RIGHT] = "right",
+};
+/* uptime in ms of each button's last press or release, the script's start before the first */
+static uint32_t last_change[ARRAY_SIZE(button_names)];
+/* input() is running: a sleep() in it does not start another one */
+static bool in_input;
 
 static void check_stop(lua_State *L)
 {
@@ -218,6 +234,61 @@ static int l_split(lua_State *L)
 	return 3;
 }
 
+/* ---- buttons ---- */
+
+/*
+ * Calls the script's input(button, pressed, seconds) for each change waiting; scripts without it
+ * ignore them. seconds is how long the button was up before a press, or held before a release.
+ */
+static void dispatch_input(lua_State *L)
+{
+	struct input_event_msg msg;
+
+	if (in_input) {
+		return;
+	}
+	while (k_msgq_get(&input_queue, &msg, K_NO_WAIT) == 0) {
+		/* right across the 32-bit uptime wrapping; a press from just before the start is 0 */
+		int32_t ms = MAX((int32_t)(msg.at - last_change[msg.button]), 0);
+
+		last_change[msg.button] = msg.at;
+		if (lua_getglobal(L, "input") != LUA_TFUNCTION) {
+			lua_pop(L, 1);
+			continue;
+		}
+		lua_pushstring(L, button_names[msg.button]);
+		lua_pushboolean(L, msg.pressed);
+		lua_pushnumber(L, (lua_Number)ms / 1000);
+		in_input = true;
+		lua_call(L, 3, 0);
+		in_input = false;
+		check_stop(L);
+	}
+}
+
+/* waits until the uptime deadline, handing button changes to input() meanwhile */
+static void wait_until(lua_State *L, int64_t deadline)
+{
+	for (;;) {
+		dispatch_input(L);
+		int64_t wait = deadline - k_uptime_get();
+		if (wait <= 0) {
+			return;
+		}
+		k_sem_take(&wake_sem, K_MSEC(wait));
+		check_stop(L);
+	}
+}
+
+void lua_anim_input(enum lua_button button, bool pressed)
+{
+	struct input_event_msg msg = {.at = k_uptime_get_32(), .button = button, .pressed = pressed};
+
+	if (atomic_get(&running) && k_msgq_put(&input_queue, &msg, K_NO_WAIT) == 0) {
+		k_sem_give(&wake_sem);
+	}
+}
+
 /* ---- timing and shapes ---- */
 
 /* sleep(ms) */
@@ -225,7 +296,7 @@ static int l_sleep(lua_State *L)
 {
 	lua_Integer ms = luaL_checkinteger(L, 1);
 
-	k_sem_take(&wake_sem, K_MSEC(MAX(ms, 0)));
+	wait_until(L, k_uptime_get() + MAX(ms, 0));
 	check_stop(L);
 	return 0;
 }
@@ -537,10 +608,8 @@ static int run_script(lua_State *L)
 		publish();
 
 		last = now;
-		int64_t wait = now + 1000 / fps - k_uptime_get();
 		/* always yield a little, the script runs on idle time */
-		k_sem_take(&wake_sem, K_MSEC(MAX(wait, 1)));
-		check_stop(L);
+		wait_until(L, MAX(now + 1000 / fps, k_uptime_get() + 1));
 	}
 }
 
@@ -582,7 +651,12 @@ static void lua_thread_main(void *p1, void *p2, void *p3)
 
 		sys_heap_init(&heap, heap_mem, sizeof(heap_mem));
 		memset(canvas, 0, sizeof(canvas));
+		/* an error in input() left it set */
+		in_input = false;
 		started_at = k_uptime_get();
+		for (size_t i = 0; i < ARRAY_SIZE(last_change); i++) {
+			last_change[i] = (uint32_t)started_at;
+		}
 
 		lua_State *L = lua_newstate(lua_zephyr_allocator, &heap, sys_rand32_get());
 		if (!L) {
@@ -670,6 +744,8 @@ int lua_anim_start(const char *path)
 	last_error[0] = '\0';
 	k_spin_unlock(&shown_lock, key);
 	atomic_set(&stop_requested, 0);
+	/* presses meant for the previous script */
+	k_msgq_purge(&input_queue);
 	k_sem_reset(&wake_sem);
 	k_sem_reset(&loaded_sem);
 	k_sem_reset(&idle_sem);

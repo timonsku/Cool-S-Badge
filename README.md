@@ -87,14 +87,17 @@ Firmware up to v0.6 used the bottom two buttons for this.
 
 Buttons
 ----------------
-Applies to firmware newer than v0.6.
-- Top right / top left: next / previous mode: static picture, GIF, Lua script. Modes without any files are skipped.
-- Bottom right / bottom left: next / previous file of that kind. The badge goes through its default and the files in the png, gif or lua folder the web UI manages.
-- The default of each mode is the file `settings.cbor` names (`default_png`, `default_gif`, `default_lua`: a path such as `png/cat.png`). Without one, or when that file is gone, it is default.png, default.gif or default.lua in the root, and without that the first file in the folder. Renaming or deleting the file through the web UI keeps the setting pointing at it or clears it.
-- Hold the bottom two for 3 seconds: the file that is showing becomes the new default. The LEDs flash white to confirm. Up to v0.8 this copied the file over default.png and so on; now it only changes the setting.
+Applies to firmware v0.10 and newer.
+- Bottom right / bottom left: next / previous file. The badge steps through all pictures in the png folder, then the GIFs in the gif folder, then the Lua scripts in the lua folder, and round again.
+- Top right / top left: buttons for the Lua script that is running, see `input()` in [docs/LUA.md](docs/LUA.md). Scripts that don't use them ignore them.
+- The badge starts with its one default file: the file `settings.cbor` names (`default_file`, a path such as `png/cat.png`). Without one, or when that file is gone, it starts with the first file it has, in the order above. Files in the root, like default.png from older firmware, are not shown any more. Renaming or deleting the file through the web UI keeps the setting pointing at it or clears it.
+- Hold the bottom two for 3 seconds: the file that is showing becomes the default. The LEDs flash white to confirm. "Make default" in the web UI's Media tab does the same.
 - Press the top two together and let go at once: the LEDs show the battery percentage for 3 seconds, all 30 LEDs from 95 % and fewer below, green from 60 %, yellow from 30 %, red below. All blue means USB power: the badge reads its battery from its supply voltage, so there is no reading while it is plugged in. Holding them for a second turns the badge off instead. The web UI shows the battery next to the badge's name.
 - Hold all four for 10 seconds: restart into USB recovery.
-- Live drawings and pictures from the iPixel app are saved as default.png, GIFs as default.gif, and become the default again. Older firmware kept drawings in default.dat, the first start on the new firmware converts that file.
+- Live drawings and pictures from the iPixel app are saved as png/ipixel.png, GIFs as gif/ipixel.gif, and become the default. Firmware up to v0.6 kept drawings in default.dat, the first start on newer firmware converts that file.
+- Updating from v0.9 or older: the default of the mode the badge started in becomes its default file, unless that was a file in the root.
+
+Firmware v0.7 to v0.9: the top buttons step through the modes (picture, GIF, Lua script), the bottom buttons through the files of that mode. Each mode has its own default (`default_png`, `default_gif`, `default_lua` in `settings.cbor`, else default.png and so on in the root), and the Settings tab picks the mode the badge starts in.
 
 Development
 -----------------

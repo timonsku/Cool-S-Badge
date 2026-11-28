@@ -21,9 +21,8 @@
  *   9 read   {}                   {running, path, error}  the last script started, error ""
  *                                     unless it failed
  *  10 write  {}                   {}  restart and erase all storage, settings included
- *  11 read   {}                   {brightness, boot, name, default, max,
- *                                     default_png, default_gif, default_lua, path_max}
- *  12 write  {brightness?, boot?, name?, default_png?, default_gif?, default_lua?}  {}
+ *  11 read   {}                   {brightness, name, default, max, default_file, path_max}
+ *  12 write  {brightness?, name?, default_file?}  {}
  *                                     any of them, see badge_settings.h
  *  13 read   {}                   {usb, mv?, percent?}  the battery, see battery.h; mv and
  *                                     percent only off USB, once there is a reading
@@ -31,13 +30,15 @@
  *  15 write  {path}               {}  delete a file, or a folder once it is empty
  *  16 write  {from, to}           {}  rename or move a file or folder; to must not exist
  *
- * brightness is in percent, boot is the folder of the mode the badge starts
- * in, name is what follows "LED_BLE_" in its Bluetooth name, "" for default,
- * the name used then, and max the longest name. A new name is advertised
- * after the next disconnect. default_* is the file each mode starts with,
- * as a path below the root ("png/cat.png") of at most path_max bytes, or ""
- * for the file in the root (default.png and so on). The badge copes with it
- * missing, and it follows the file through 4, 15 and 16.
+ * brightness is in percent, name is what follows "LED_BLE_" in its Bluetooth
+ * name, "" for default, the name used then, and max the longest name. A new
+ * name is advertised after the next disconnect. default_file is the file the
+ * badge starts with, a path below the root ("png/cat.png") of at most
+ * path_max bytes, or "" for the first file it has. Only a file directly in
+ * png, gif or lua is shown. The badge copes with it missing, and it follows
+ * the file through 4, 15 and 16. Up to v0.9 there were boot and default_png,
+ * default_gif, default_lua instead: the mode it started in and the file of
+ * each mode.
  *
  * 6, 7 and 14 to 16 take a full path such as "/lfs1/settings.cbor", for
  * backups and for managing the whole file system. Names starting with "."
@@ -571,16 +572,11 @@ static int media_settings(struct smp_streamer *ctxt)
 	badge_settings_get(&s);
 	bluetooth_default_name(name, sizeof(name));
 	ok = zcbor_tstr_put_lit(zse, "brightness") && zcbor_uint32_put(zse, s.brightness) &&
-	     zcbor_tstr_put_lit(zse, "boot") && zcbor_tstr_put_term(zse, badge_boot_dir(s.boot), 4) &&
 	     zcbor_tstr_put_lit(zse, "name") && zcbor_tstr_put_term(zse, s.name, sizeof(s.name)) &&
 	     zcbor_tstr_put_lit(zse, "default") && zcbor_tstr_put_term(zse, name, sizeof(name)) &&
 	     zcbor_tstr_put_lit(zse, "max") && zcbor_uint32_put(zse, BADGE_NAME_MAX) &&
-	     zcbor_tstr_put_lit(zse, "default_png") &&
-	     zcbor_tstr_put_term(zse, s.defaults[BOOT_PNG], sizeof(s.defaults[0])) &&
-	     zcbor_tstr_put_lit(zse, "default_gif") &&
-	     zcbor_tstr_put_term(zse, s.defaults[BOOT_GIF], sizeof(s.defaults[0])) &&
-	     zcbor_tstr_put_lit(zse, "default_lua") &&
-	     zcbor_tstr_put_term(zse, s.defaults[BOOT_LUA], sizeof(s.defaults[0])) &&
+	     zcbor_tstr_put_lit(zse, "default_file") &&
+	     zcbor_tstr_put_term(zse, s.default_file, sizeof(s.default_file)) &&
 	     zcbor_tstr_put_lit(zse, "path_max") && zcbor_uint32_put(zse, BADGE_PATH_MAX);
 
 	return MGMT_RETURN_CHECK(ok);
@@ -588,20 +584,15 @@ static int media_settings(struct smp_streamer *ctxt)
 
 static int media_settings_set(struct smp_streamer *ctxt)
 {
-	struct zcbor_string boot = { 0 };
 	struct zcbor_string name = { 0 };
-	struct zcbor_string defaults[BOOT_MODES] = { 0 };
+	struct zcbor_string file = { 0 };
 	uint32_t brightness = 0;
 	size_t decoded;
 
 	struct zcbor_map_decode_key_val fields[] = {
 		ZCBOR_MAP_DECODE_KEY_DECODER("brightness", zcbor_uint32_decode, &brightness),
-		ZCBOR_MAP_DECODE_KEY_DECODER("boot", zcbor_tstr_decode, &boot),
 		ZCBOR_MAP_DECODE_KEY_DECODER("name", zcbor_tstr_decode, &name),
-		/* in enum badge_boot_mode order, from fields[3] on */
-		ZCBOR_MAP_DECODE_KEY_DECODER("default_png", zcbor_tstr_decode, &defaults[BOOT_PNG]),
-		ZCBOR_MAP_DECODE_KEY_DECODER("default_gif", zcbor_tstr_decode, &defaults[BOOT_GIF]),
-		ZCBOR_MAP_DECODE_KEY_DECODER("default_lua", zcbor_tstr_decode, &defaults[BOOT_LUA]),
+		ZCBOR_MAP_DECODE_KEY_DECODER("default_file", zcbor_tstr_decode, &file),
 	};
 
 	if (zcbor_map_decode_bulk(ctxt->reader->zs, fields, ARRAY_SIZE(fields), &decoded)) {
@@ -609,28 +600,18 @@ static int media_settings_set(struct smp_streamer *ctxt)
 	}
 	/* all checked before any is changed */
 	if ((fields[0].found && brightness > 100) ||
-	    (fields[1].found && badge_boot_from_dir(boot.value, boot.len) < 0) ||
-	    (fields[2].found && !badge_name_valid(name.value, name.len))) {
+	    (fields[1].found && !badge_name_valid(name.value, name.len)) ||
+	    (fields[2].found && !badge_path_valid(file.value, file.len))) {
 		return MGMT_ERR_EINVAL;
-	}
-	for (int i = 0; i < BOOT_MODES; i++) {
-		if (fields[3 + i].found && !badge_path_valid(defaults[i].value, defaults[i].len)) {
-			return MGMT_ERR_EINVAL;
-		}
-	}
-	for (int i = 0; i < BOOT_MODES; i++) {
-		if (fields[3 + i].found) {
-			badge_settings_set_default(i, defaults[i].value, defaults[i].len);
-		}
 	}
 	if (fields[0].found) {
 		badge_settings_set_brightness(brightness);
 	}
 	if (fields[1].found) {
-		badge_settings_set_boot(boot.value, boot.len);
+		badge_settings_set_name(name.value, name.len);
 	}
 	if (fields[2].found) {
-		badge_settings_set_name(name.value, name.len);
+		badge_settings_set_default(file.value, file.len);
 	}
 
 	return MGMT_ERR_EOK;

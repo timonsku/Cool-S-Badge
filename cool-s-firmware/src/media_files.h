@@ -1,6 +1,6 @@
 /*
- * Files the badge shows: the defaults in the littlefs root and the media
- * folders the web UI manages, plus PNG conversion to and from LED pixels.
+ * Files the badge shows: the media folders the web UI manages, plus PNG
+ * conversion to and from LED pixels.
  */
 #ifndef MEDIA_FILES_H
 #define MEDIA_FILES_H
@@ -10,10 +10,7 @@
 #include <zephyr/drivers/led_strip.h>
 
 #define MEDIA_ROOT "/lfs1"
-#define DEFAULT_GIF_PATH MEDIA_ROOT "/default.gif"
-#define DEFAULT_PNG_PATH MEDIA_ROOT "/default.png"
-#define DEFAULT_LUA_PATH MEDIA_ROOT "/default.lua"
-/* raw pixel dump written by firmware up to v0.6, replaced by default.png */
+/* raw pixel dump written by firmware up to v0.6, converted into a PNG */
 #define LEGACY_DAT_PATH MEDIA_ROOT "/default.dat"
 
 #define MEDIA_PATH_MAX 64

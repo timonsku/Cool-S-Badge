@@ -26,6 +26,19 @@ int lua_anim_start(const char *path);
 /* Stop the running script, if any, and wait until it has. */
 void lua_anim_stop(void);
 
+/* The buttons a script gets: the top two. */
+enum lua_button {
+	LUA_BUTTON_LEFT,
+	LUA_BUTTON_RIGHT,
+};
+
+/*
+ * A button was pressed or let go. The script's input(button, pressed, seconds)
+ * gets it soon after, with how long the button was up or held before, between frames or during sleep(); dropped if no script runs
+ * or it has no input(). Safe from any thread, does not block.
+ */
+void lua_anim_input(enum lua_button button, bool pressed);
+
 /* Copy the latest frame into out (n pixels) if there is a new one. */
 bool lua_anim_frame(struct led_rgb *out, size_t n);
 

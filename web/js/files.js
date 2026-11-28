@@ -6,7 +6,7 @@ import { app } from './app.js';
 import { $, el, notify, confirmDialog, promptDialog } from './dom.js';
 import { FORMATS, blocksFor, formatBytes } from './formats.js';
 import {
-  refreshMedia, storageInfo, fileManagerSupported, defaultFor, defaultKind, makeDefault,
+  refreshMedia, storageInfo, fileManagerSupported, singleDefault, defaultFor, defaultKind, makeDefault,
 } from './media.js';
 
 // Left free for littlefs copy-on-write and the settings the badge saves itself, as in media.js.
@@ -112,11 +112,12 @@ function renderEntry(entry) {
     const onFlash = storage ? blocksFor(entry.size, storage.block) * storage.block : 0;
     info.push(el('span', { title: `Takes ${formatBytes(onFlash)} of flash` }, formatBytes(entry.size)));
     const kind = defaultKind(path);
+    // up to v0.9 each mode has a default, from v0.10 on there is one
+    const label = singleDefault() ? 'default' : `${FORMATS[kind]?.label} default`;
     if (kind && defaultFor(kind) === path) {
-      info.unshift(el('span', { className: 'tag' }, `${FORMATS[kind].label} default`));
+      info.unshift(el('span', { className: 'tag' }, label[0].toUpperCase() + label.slice(1)));
     } else if (kind) {
-      actions.push(button('Make default', `Make ${entry.name} the ${FORMATS[kind].label} default`,
-        () => makeDefault(kind, path)));
+      actions.push(button('Make default', `Make ${entry.name} the ${label}`, () => makeDefault(kind, path)));
     }
     actions.push(button('Download', `Download ${entry.name}`, () => download(path), { browse: true }));
   }

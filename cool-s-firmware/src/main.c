@@ -142,7 +142,7 @@ enum display_state {
 	DISPLAY_LUA,
 };
 
-/* the kinds of files the badge shows, in the order the top buttons step through them */
+/* the kinds of files the badge shows, in the order the bottom buttons step through them */
 enum media_kind {
 	MEDIA_PNG,
 	MEDIA_GIF,
@@ -152,13 +152,16 @@ enum media_kind {
 
 static const struct {
 	const char *dir;
-	const char *default_path;
 	enum display_state loading;
 } media_kinds[MEDIA_KINDS] = {
-	[MEDIA_PNG] = {"png", DEFAULT_PNG_PATH, DISPLAY_LOADING_STATIC},
-	[MEDIA_GIF] = {"gif", DEFAULT_GIF_PATH, DISPLAY_LOADING_GIF},
-	[MEDIA_LUA] = {"lua", DEFAULT_LUA_PATH, DISPLAY_LOADING_LUA},
+	[MEDIA_PNG] = {"png", DISPLAY_LOADING_STATIC},
+	[MEDIA_GIF] = {"gif", DISPLAY_LOADING_GIF},
+	[MEDIA_LUA] = {"lua", DISPLAY_LOADING_LUA},
 };
+
+/* where pictures and GIFs from the iPixel app go, below the root; they become the default */
+#define IPIXEL_PNG "png/ipixel.png"
+#define IPIXEL_GIF "gif/ipixel.gif"
 /* set from the Bluetooth and input threads, handled in the main loop */
 static volatile enum display_state display_state = DISPLAY_LOADING_STATIC;
 static bool storage_ok;
@@ -194,11 +197,11 @@ LOG_MODULE_REGISTER(app);
 #define USER_BUTTON             DK_BTN1_MSK
 
 /*
- * Buttons, as the input thread sees them. Top right and top left step
- * forwards and backwards through the modes (static image, GIF, Lua script),
- * bottom right and bottom left through the files of that kind. A press only
- * acts on release, and not at all if it was part of a combination or
- * answered the upload prompt.
+ * Buttons, as the input thread sees them. Bottom right and bottom left step
+ * forwards and backwards through all files: the pictures, then the GIFs,
+ * then the Lua scripts. They act on release, and not at all if the press was
+ * part of a combination or answered the upload prompt. The top two are the
+ * Lua script's, see lua_anim_input(), apart from their combinations.
  */
 enum {
 	BUTTON_TOP_RIGHT = 0,
@@ -213,8 +216,6 @@ static bool button_spent[BUTTON_COUNT] = {true, true, true, true};
 
 /* requests from the input and Bluetooth threads, handled by the main loop */
 enum {
-	REQUEST_NEXT_MODE = BIT(0),
-	REQUEST_PREVIOUS_MODE = BIT(6),
 	REQUEST_RUN_SCRIPT = BIT(7),
 	REQUEST_NEXT = BIT(1),
 	REQUEST_PREVIOUS = BIT(2),
@@ -223,11 +224,12 @@ enum {
 	REQUEST_PREVIEW_END = BIT(5),
 	REQUEST_RENDER = BIT(8),
 	REQUEST_SHOW_BATTERY = BIT(9),
+	/* show the default file again, or the first one there is */
 	REQUEST_RELOAD = BIT(10),
 };
 static atomic_t requests;
 
-/* 0 shows the default file of the current mode, n the n-th file in its folder */
+/* the file showing: the n-th in the folder of the current kind, 0 for none */
 static volatile int selected;
 
 #define SET_DEFAULT_HOLD_MS 3000
@@ -307,6 +309,8 @@ void playback_animation(struct pixel_animation *animation);
 void display_state_set(enum display_state state);
 void display_state_process();
 int save_gif_to_file(const char *filename, const uint8_t* gif_data, size_t gif_size);
+static int save_ipixel_png(const void *png, size_t len);
+static void make_folder(const char *path);
 
 static ssize_t iPixel_write(struct bt_conn *conn,
 			 const struct bt_gatt_attr *attr,
@@ -498,12 +502,11 @@ void imageCommand(const void *buf, uint16_t len)
 			bt_gatt_notify(NULL, &led_svc.attrs[5], &bytes2, sizeof(bytes2));
 
 			// LOG_HEXDUMP_DBG(data,len,"Raw GIF packet");
-			if (save_gif_to_file(DEFAULT_GIF_PATH, &data[15], len - 15) == 0) {
+			if (save_gif_to_file(MEDIA_ROOT "/" IPIXEL_GIF, &data[15], len - 15) == 0) {
 				// the app expects its GIF to be the default from now on
-				badge_settings_set_default(MEDIA_GIF, "", 0);
+				badge_settings_set_default(IPIXEL_GIF, sizeof(IPIXEL_GIF) - 1);
 				// only the main loop may open or close the decoder it is playing from
-				selected = 0;
-				display_state_set(DISPLAY_LOADING_GIF);
+				atomic_or(&requests, REQUEST_RELOAD);
 			}
 		}
 		
@@ -512,11 +515,10 @@ void imageCommand(const void *buf, uint16_t len)
 			LOG_INF("PNG header detected");
 			if (png_to_pixels(&data[15], len - 15, pixels_raw, STRIP_NUM_PIXELS) == 0) {
 				render();
-				selected = 0;
 				display_state_set(DISPLAY_STATIC);
 				// kept as sent, the badge decodes it again at boot
-				if (file_write_replace(DEFAULT_PNG_PATH, MEDIA_ROOT "/.ipixel.tmp", &data[15], len - 15) == 0) {
-					badge_settings_set_default(MEDIA_PNG, "", 0);
+				if (save_ipixel_png(&data[15], len - 15) == 0) {
+					atomic_or(&requests, REQUEST_RELOAD);
 				}
 			}
 			// acknowledge receipt
@@ -798,32 +800,41 @@ static bool file_exists(const char *path) {
 	return fs_stat(path, &info) == 0 && info.type == FS_DIR_ENTRY_FILE;
 }
 
-/*
- * The default file of a kind: the one the settings name, or else the one in
- * the root, as before there was a setting. False if that file is missing too.
- */
-static bool default_path(enum media_kind kind, char *out, size_t len) {
-	char set[BADGE_PATH_MAX + 1];
-	badge_settings_default(kind, set, sizeof(set));
-	if (set[0]) {
-		snprintf(out, len, MEDIA_ROOT "/%s", set);
-		if (file_exists(out)) {
-			return true;
-		}
-		LOG_WRN("The default %s file %s is missing", media_kinds[kind].dir, out);
-	}
-	strncpy(out, media_kinds[kind].default_path, len - 1);
-	out[len - 1] = 0;
-	return file_exists(out);
+static void show_file(enum media_kind kind, int index) {
+	selected = index;
+	display_state_set(media_kinds[kind].loading);
 }
 
-// index 0 is the default file, n the n-th file in the folder
-static int selection_path(enum media_kind kind, int index, char *out, size_t len) {
-	if (index == 0) {
-		default_path(kind, out, len);
-		return 0;
+/*
+ * The default file the settings name, or else the first file there is, in
+ * the order of the bottom buttons. Only files in the media folders count.
+ */
+static void show_start(void) {
+	char set[BADGE_PATH_MAX + 1];
+	char path[MEDIA_PATH_MAX];
+
+	badge_settings_default(set, sizeof(set));
+	if (set[0]) {
+		snprintf(path, sizeof(path), MEDIA_ROOT "/%s", set);
+		for (int kind = 0; kind < MEDIA_KINDS; kind++) {
+			int index = media_index(media_kinds[kind].dir, path);
+			if (index > 0) {
+				show_file(kind, index);
+				return;
+			}
+		}
+		LOG_WRN("The default file %s is not in a media folder", path);
 	}
-	return media_path(media_kinds[kind].dir, index, out, len);
+	for (int kind = 0; kind < MEDIA_KINDS; kind++) {
+		if (media_count(media_kinds[kind].dir) > 0) {
+			show_file(kind, 1);
+			return;
+		}
+	}
+	LOG_INF("Nothing to show");
+	selected = 0;
+	display_state_set(DISPLAY_STATIC);
+	clear_display();
 }
 
 static int run_script(const char *path) {
@@ -842,158 +853,89 @@ static int show_static(const char *path) {
 	return rc;
 }
 
+/* A file that does not load leaves what was showing: a GIF keeps playing, a script shows its error. */
 void display_state_process() {
 	char path[MEDIA_PATH_MAX];
-	int index = selected;
+	enum media_kind kind = current_kind();
 	int rc;
 
 	switch (display_state) {
 	case DISPLAY_LOADING_STATIC:
 		// change state first, so that a request arriving while loading is not lost
 		display_state = DISPLAY_STATIC;
-		rc = selection_path(MEDIA_PNG, index, path, sizeof(path));
+		rc = media_path(media_kinds[kind].dir, selected, path, sizeof(path));
 		if (rc == 0) {
 			rc = show_static(path);
-		}
-		if (rc != 0 && index == 0 && media_path("png", 1, path, sizeof(path)) == 0) {
-			// no default image yet: the first one in the folder
-			rc = show_static(path);
-			if (rc == 0) {
-				selected = 1;
-			}
-		}
-		if (rc != 0) {
-			LOG_WRN("Cannot show image %d: %d", index, rc);
-			// a broken file in the folder leaves the previous picture up
-			if (index == 0) {
-				clear_display();
-			}
 		}
 		break;
 	case DISPLAY_LOADING_GIF:
 		// until it plays: another thread may be about to delete the file
 		k_mutex_lock(&gif_lock, K_FOREVER);
 		display_state = DISPLAY_GIF;
-		rc = selection_path(MEDIA_GIF, index, path, sizeof(path));
+		rc = media_path(media_kinds[kind].dir, selected, path, sizeof(path));
 		if (rc == 0) {
 			rc = process_gif(path);
-		}
-		if (rc != 0 && index == 0 && media_path("gif", 1, path, sizeof(path)) == 0) {
-			rc = process_gif(path);
-			if (rc == 0) {
-				selected = 1;
-			}
 		}
 		if (rc == 0) {
 			gd_rewind(gif);
 			gif_next_frame_at = 0;
-		} else if (index != 0 && gif) {
-			// a broken file in the folder leaves the previous GIF playing
-			LOG_WRN("Cannot play GIF %d: %d", index, rc);
-		} else {
-			LOG_WRN("No GIF available, falling back to static image");
-			if (display_state == DISPLAY_GIF) {
-				selected = 0;
-				display_state = DISPLAY_LOADING_STATIC;
-			}
 		}
 		k_mutex_unlock(&gif_lock);
 		break;
 	case DISPLAY_LOADING_LUA:
 		display_state = DISPLAY_LUA;
-		rc = selection_path(MEDIA_LUA, index, path, sizeof(path));
+		rc = media_path(media_kinds[kind].dir, selected, path, sizeof(path));
 		if (rc == 0) {
 			rc = run_script(path);
 		}
-		if (rc != 0 && index == 0 && media_path("lua", 1, path, sizeof(path)) == 0) {
-			rc = run_script(path);
-			if (rc == 0) {
-				selected = 1;
-			}
-		}
-		if (rc != 0 && index != 0) {
-			// the script shows that it failed, see lua_anim.c
-			LOG_WRN("Cannot run script %d: %d", index, rc);
-		} else if (rc != 0) {
-			LOG_WRN("No Lua script available, falling back to static image");
-			if (display_state == DISPLAY_LUA) {
-				selected = 0;
-				display_state = DISPLAY_LOADING_STATIC;
-			}
-		}
 		break;
 	default:
-		break;
+		return;
+	}
+	if (rc != 0) {
+		LOG_WRN("Cannot show %s file %d: %d", media_kinds[kind].dir, selected, rc);
 	}
 }
 
-// whether there is anything to show in a mode; there is always the static image
-static bool kind_available(enum media_kind kind) {
-	char path[MEDIA_PATH_MAX];
-	return kind == MEDIA_PNG || default_path(kind, path, sizeof(path)) ||
-	       media_count(media_kinds[kind].dir) > 0;
-}
-
-// the next or previous mode that has something to show
-static void step_mode(int delta) {
+// the next or previous file: the pictures, then the GIFs, then the scripts, round and round
+static void step_file(int delta) {
 	enum media_kind kind = current_kind();
-	for (int step = 1; step < MEDIA_KINDS; step++) {
-		enum media_kind next = (kind + delta * step + MEDIA_KINDS * step) % MEDIA_KINDS;
-		if (kind_available(next)) {
-			LOG_INF("Showing %s files", media_kinds[next].dir);
-			selected = 0;
-			display_state_set(media_kinds[next].loading);
-			return;
-		}
-	}
-	LOG_INF("Nothing else to show");
-}
+	int counts[MEDIA_KINDS];
+	int total = 0;
 
-// next or previous file of the current kind, the default file first
-static void step_selection(int delta) {
-	enum media_kind kind = current_kind();
-	int count = media_count(media_kinds[kind].dir);
-	if (count < 0) {
-		count = 0;
+	for (int k = 0; k < MEDIA_KINDS; k++) {
+		counts[k] = MAX(media_count(media_kinds[k].dir), 0);
+		total += counts[k];
 	}
-	char path[MEDIA_PATH_MAX];
-	bool has_default = default_path(kind, path, sizeof(path));
-	// a default from the folder is not shown twice: it is that file there
-	int in_folder = has_default ? media_index(media_kinds[kind].dir, path) : 0;
-	int first = has_default && in_folder <= 0 ? 0 : 1;
-	int span = count + 1 - first;
-	if (span <= 1) {
+	// files may have been removed since; 0 is before the first
+	int index = CLAMP(selected, 0, counts[kind]);
+	if (total == 0 || (total == 1 && index > 0)) {
 		LOG_INF("Nothing else to show");
 		return;
 	}
-	int index = selected;
-	if (index == 0 && in_folder > 0) {
-		index = in_folder;
+	index += delta;
+	while (index < 1 || index > counts[kind]) {
+		if (index < 1) {
+			kind = (kind + MEDIA_KINDS - 1) % MEDIA_KINDS;
+			index = counts[kind];
+		} else {
+			kind = (kind + 1) % MEDIA_KINDS;
+			index = 1;
+		}
 	}
-	if (index < first || index > count) {
-		// files were removed since
-		index = first;
-	}
-	index = first + ((index - first + delta) % span + span) % span;
-	LOG_INF("Selecting %s file %d of %d", media_kinds[kind].dir, index, count);
-	selected = index;
-	display_state_set(media_kinds[kind].loading);
+	LOG_INF("Selecting %s file %d of %d", media_kinds[kind].dir, index, counts[kind]);
+	show_file(kind, index);
 }
 
 static void set_selection_as_default(void) {
-	enum media_kind kind = current_kind();
 	char path[MEDIA_PATH_MAX];
-	int index = selected;
-	if (index == 0) {
-		LOG_INF("The default is already showing");
-		return;
-	}
-	if (media_path(media_kinds[kind].dir, index, path, sizeof(path)) != 0) {
+
+	if (selected < 1 || media_path(media_kinds[current_kind()].dir, selected, path, sizeof(path)) != 0) {
 		return;
 	}
 	// the settings name it, the file stays where it is
 	const char *relative = &path[sizeof(MEDIA_ROOT "/") - 1];
-	int rc = badge_settings_set_default(kind, relative, strlen(relative));
+	int rc = badge_settings_set_default(relative, strlen(relative));
 	if (rc != 0) {
 		LOG_ERR("Could not make %s the default: %d", path, rc);
 		return;
@@ -1145,6 +1087,10 @@ static void input_event_callback(struct input_event *evt, void *user_data)
 	bool consumed = update_approval_button(index, evt->value);
 	check_battery_combo(index, evt->value, consumed);
 	LOG_INF("Button %d %s", index, evt->value ? "pressed" : "released");
+	// the script sees every press and release of the top buttons, as they happen
+	if (!consumed && (index == BUTTON_TOP_LEFT || index == BUTTON_TOP_RIGHT)) {
+		lua_anim_input(index == BUTTON_TOP_LEFT ? LUA_BUTTON_LEFT : LUA_BUTTON_RIGHT, evt->value);
+	}
 
 	if (evt->value) {
 		button_spent[index] = consumed;
@@ -1160,12 +1106,6 @@ static void input_event_callback(struct input_event *evt, void *user_data)
 		button_held[index] = false;
 		if (!button_spent[index] && !consumed) {
 			switch (index) {
-			case BUTTON_TOP_RIGHT:
-				atomic_or(&requests, REQUEST_NEXT_MODE);
-				break;
-			case BUTTON_TOP_LEFT:
-				atomic_or(&requests, REQUEST_PREVIOUS_MODE);
-				break;
 			case BUTTON_BOTTOM_RIGHT:
 				atomic_or(&requests, REQUEST_NEXT);
 				break;
@@ -1320,8 +1260,33 @@ void check_for_recovery_mode()
 	}
 }
 
+// makes the folder for a file below MEDIA_ROOT if it is not there yet
+static void make_folder(const char *path)
+{
+	char folder[MEDIA_PATH_MAX];
+	const char *slash = strrchr(path, '/');
+
+	snprintf(folder, sizeof(folder), "%.*s", (int)(slash - path), path);
+	int rc = fs_mkdir(folder);
+	if (rc < 0 && rc != -EEXIST) {
+		LOG_ERR("Could not make %s: %d", folder, rc);
+	}
+}
+
+// a picture from the iPixel app, or a drawing in it, as a PNG file; it becomes the default
+static int save_ipixel_png(const void *png, size_t len)
+{
+	make_folder(MEDIA_ROOT "/" IPIXEL_PNG);
+	int rc = file_write_replace(MEDIA_ROOT "/" IPIXEL_PNG, MEDIA_ROOT "/.ipixel.tmp", png, len);
+	if (rc == 0) {
+		badge_settings_set_default(IPIXEL_PNG, sizeof(IPIXEL_PNG) - 1);
+	}
+	return rc;
+}
+
 int save_gif_to_file(const char *filename, const uint8_t* gif_data, size_t gif_size)
 {
+	make_folder(filename);
 	// it may be the GIF that is playing
 	display_files_lock(filename);
 	int rc = file_write_replace(filename, MEDIA_ROOT "/.ipixel.tmp", gif_data, gif_size);
@@ -1409,8 +1374,9 @@ static void migrate_legacy_default(void)
 	struct fs_file_t file;
 	uint8_t raw[STRIP_NUM_PIXELS * 3];
 	struct led_rgb legacy[STRIP_NUM_PIXELS];
+	char set[BADGE_PATH_MAX + 1];
 
-	if (fs_stat(DEFAULT_PNG_PATH, &info) == 0 || fs_stat(LEGACY_DAT_PATH, &info) != 0) {
+	if (fs_stat(LEGACY_DAT_PATH, &info) != 0) {
 		return;
 	}
 	memset(raw, 0, sizeof(raw));
@@ -1426,9 +1392,15 @@ static void migrate_legacy_default(void)
 	for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
 		legacy[i] = (struct led_rgb){.r = raw[i * 3], .g = raw[i * 3 + 1], .b = raw[i * 3 + 2]};
 	}
-	if (pixels_to_png_file(legacy, STRIP_NUM_PIXELS, DEFAULT_PNG_PATH, MEDIA_ROOT "/.migrate.tmp") == 0) {
-		LOG_INF("Converted default.dat to default.png");
+	make_folder(MEDIA_ROOT "/" IPIXEL_PNG);
+	if (pixels_to_png_file(legacy, STRIP_NUM_PIXELS, MEDIA_ROOT "/" IPIXEL_PNG,
+			       MEDIA_ROOT "/.migrate.tmp") == 0) {
+		LOG_INF("Converted default.dat to " IPIXEL_PNG);
 		fs_unlink(LEGACY_DAT_PATH);
+		badge_settings_default(set, sizeof(set));
+		if (!set[0]) {
+			badge_settings_set_default(IPIXEL_PNG, sizeof(IPIXEL_PNG) - 1);
+		}
 	}
 }
 
@@ -1448,31 +1420,27 @@ static void handle_requests(void)
 		end_preview();
 	}
 	if (r & REQUEST_SAVE_DRAWING) {
-		if (pixels_to_png_file(pixels_raw, STRIP_NUM_PIXELS, DEFAULT_PNG_PATH, MEDIA_ROOT "/.draw.tmp") == 0) {
-			badge_settings_set_default(MEDIA_PNG, "", 0);
+		make_folder(MEDIA_ROOT "/" IPIXEL_PNG);
+		if (pixels_to_png_file(pixels_raw, STRIP_NUM_PIXELS, MEDIA_ROOT "/" IPIXEL_PNG,
+				       MEDIA_ROOT "/.draw.tmp") == 0) {
+			badge_settings_set_default(IPIXEL_PNG, sizeof(IPIXEL_PNG) - 1);
+			r |= REQUEST_RELOAD;
 		}
 	}
 	if (r & REQUEST_RELOAD) {
-		// the file that was showing was deleted or renamed
-		selected = 0;
-		display_state_set(media_kinds[current_kind()].loading);
+		// the file that was showing changed or went away, or there is a new default
+		show_start();
 	}
 	if (r & REQUEST_RUN_SCRIPT) {
 		// started again even if it already runs: the web UI uploaded a new version
 		selected = atomic_get(&script_requested);
 		display_state_set(DISPLAY_LOADING_LUA);
 	}
-	if (r & REQUEST_NEXT_MODE) {
-		step_mode(1);
-	}
-	if (r & REQUEST_PREVIOUS_MODE) {
-		step_mode(-1);
-	}
 	if (r & REQUEST_NEXT) {
-		step_selection(1);
+		step_file(1);
 	}
 	if (r & REQUEST_PREVIOUS) {
-		step_selection(-1);
+		step_file(-1);
 	}
 }
 
@@ -1498,17 +1466,8 @@ int main(void)
 	}
 	storage_ok = rc == 0;
 	if (storage_ok) {
-		migrate_legacy_default();
-	}
-
-	if (storage_ok) {
 		badge_settings_load();
-	}
-	// at power on and on waking, the badge shows the mode the settings name
-	{
-		struct badge_settings s;
-		badge_settings_get(&s);
-		display_state_set(media_kinds[s.boot < MEDIA_KINDS ? s.boot : MEDIA_PNG].loading);
+		migrate_legacy_default();
 	}
 
 	if (!device_is_ready(strip)) {
@@ -1516,6 +1475,8 @@ int main(void)
 		update_trial_failed();
 		return 0;
 	}
+	// at power on and on waking, the badge shows its default file
+	show_start();
 
 	err = bt_enable(NULL);
 	if (err) {
